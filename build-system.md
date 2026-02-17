@@ -1,48 +1,79 @@
 # Code Docs Build System
 
-A shell-based build system that converts Markdown files from `~/Documents/code/` projects into a browsable HTML documentation site at `~/Documents/code-html/`.
+A shell-based build system that converts Markdown files from source code projects into a browsable HTML documentation site. Paths are configured in `.env` (see `.env.example`).
 
 ## File Locations
 
 | What | Path |
 |------|------|
-| Project repo | `~/Documents/code/code-docs/` |
-| Symlink | `~/bin/code-docs` → `~/Documents/code/code-docs/` |
-| Build script | `~/Documents/code/code-docs/build-docs.sh` |
-| File watcher | `~/Documents/code/code-docs/watch-docs.sh` |
-| Pandoc style | `~/Documents/code/code-docs/style.html` |
-| This file | `~/Documents/code/code-docs/build-system.md` |
-| LaunchAgent | `~/Library/LaunchAgents/com.user.code-docs-watcher.plist` |
-| Source docs | `~/Documents/code/` |
-| HTML output | `~/Documents/code-html/` |
-| Dashboard | `~/Documents/code-html/dashboard.html` |
-| Index | `~/Documents/code-html/index.html` |
+| Project repo | `code-docs/` (wherever cloned) |
+| Entry-point | `code-docs/code-docs.sh` |
+| Build script | `code-docs/build-docs.sh` |
+| File watcher | `code-docs/watch-docs.sh` |
+| Pandoc style | `code-docs/style.html` |
+| Config template | `code-docs/.env.example` |
+| Local config | `code-docs/.env` (gitignored) |
+| This file | `code-docs/build-system.md` |
+| Source docs | `$CODE_DIR` (configured in `.env`) |
+| HTML output | `$OUTPUT_DIR` (configured in `.env`) |
+| Dashboard | `$OUTPUT_DIR/dashboard.html` |
+| Index | `$OUTPUT_DIR/index.html` |
+
+## Setup
+
+1. Clone the repo
+2. Run `./code-docs.sh setup` (interactive wizard that creates `.env`)
+3. Install dependencies: `brew install pandoc fswatch tmux` (or equivalent)
+4. Optionally create a symlink for convenience: `ln -s /path/to/code-docs ~/bin/code-docs`
 
 ## Usage
 
+### Entry-Point Script
+
+`code-docs.sh` is the main entry-point for setup and watcher management:
+
 ```bash
-# Full rebuild of all docs + index
-~/Documents/code/code-docs/build-docs.sh
-
-# Rebuild a single file + index (used by the watcher)
-~/Documents/code/code-docs/build-docs.sh --file ~/Documents/code/project/README.md
-
-# Clean everything and do a full rebuild
-~/Documents/code/code-docs/build-docs.sh --clean
-
-# Start the file watcher (runs initial build, then watches for changes)
-~/Documents/code/code-docs/watch-docs.sh
+./code-docs.sh setup          # Interactive .env configuration wizard
+./code-docs.sh up             # Start the file watcher (auto-runs setup if no .env)
+./code-docs.sh up --build     # Full build, then start watcher
+./code-docs.sh up --clean     # Clean build, then start watcher
+./code-docs.sh down           # Stop the file watcher
+./code-docs.sh status         # Show watcher state and configuration
+./code-docs.sh help           # Show usage info
 ```
 
-> **Note:** `~/bin/code-docs` is a symlink to `~/Documents/code/code-docs/`, so both paths work.
+### Manual Builds
+
+The build script can also be invoked directly:
+
+```bash
+./build-docs.sh                              # Full rebuild of all docs + index
+./build-docs.sh --file $CODE_DIR/project/README.md  # Rebuild a single file + index
+./build-docs.sh --clean                      # Clean everything and do a full rebuild
+```
+
+### Running the File Watcher
+
+The watcher runs in a **tmux session** so it persists across terminal sessions. Use `code-docs.sh` to manage it:
+
+```bash
+./code-docs.sh up       # Start the watcher
+./code-docs.sh down     # Stop the watcher
+./code-docs.sh status   # Check if it's running
+
+# Attach to the tmux session to see live output (detach with Ctrl-b d)
+tmux attach -t code-docs
+```
+
+> **Note:** A LaunchAgent (`com.user.code-docs-watcher.plist`) was previously used but abandoned because macOS Full Disk Access restrictions prevent launchd-spawned processes from accessing `~/Documents/`. Running the watcher from a terminal (via tmux) inherits the terminal's FDA permissions and works reliably.
 
 ## How It Works
 
 ### Scanning
 
-The build system scans `~/Documents/code/` for `.md` files in two ways:
+The build system scans `$CODE_DIR` for `.md` files in two ways:
 
-1. **Root-level**: `.md` files at the top of each project directory (depth 2, e.g., `code/project/README.md`)
+1. **Root-level**: `.md` files at the top of each project directory (depth 2, e.g., `$CODE_DIR/project/README.md`)
 2. **Doc directories**: `.md` files at any depth inside directories named `docs`, `docks`, or `doc`
 
 ### Excluded Directories
@@ -69,7 +100,7 @@ Each Markdown file is converted to a standalone HTML page using **pandoc** with:
 
 - The shared `style.html` template for consistent styling
 - The first `# heading` as the page title (falls back to filename)
-- Output placed in `~/Documents/code-html/` mirroring the source directory structure
+- Output placed in `$OUTPUT_DIR` mirroring the source directory structure
 
 ### Index Generation
 
@@ -91,10 +122,14 @@ A `dashboard.html` is generated with metadata about all documented projects:
 
 ### File Watcher
 
-`watch-docs.sh` uses `fswatch` to monitor `~/Documents/code/` for `.md` file changes. When a file changes, it rebuilds just that file and regenerates the index.
+`watch-docs.sh` uses `fswatch` to monitor `$CODE_DIR` for changes. It classifies events into three categories:
+
+- **Markdown files** (`.md`) — incremental rebuild of the changed file
+- **Directories or deleted paths** — full rebuild with orphan cleanup (debounced to max once per 10 seconds)
+- **Other files** — ignored silently
 
 ## Dependencies
 
 - **pandoc** — Markdown to HTML conversion
 - **fswatch** — File system change monitoring (for `watch-docs.sh`)
-- Both expected at `/opt/homebrew/bin` (Homebrew on Apple Silicon)
+- Both available via Homebrew (`brew install pandoc fswatch`); path configured via `EXTRA_PATH` in `.env`
