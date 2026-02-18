@@ -55,12 +55,21 @@ HEARTBEAT_PID=$!
 echo ""
 echo "Watching for changes in $CODE_DIR ..."
 
+# Build fswatch exclude args for excluded projects
+exclude_args=()
+if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+    for project in $EXCLUDE_PROJECTS; do
+        exclude_args+=(--exclude "$CODE_DIR/$project")
+    done
+fi
+
 fswatch \
     --event Created --event Updated --event Renamed --event Removed \
     --latency 2 \
     --exclude="node_modules" --exclude="\\.git" --exclude="vendor" \
     --exclude="__pycache__" --exclude="\\.venv" --exclude="\\.next" \
     --exclude="dist" --exclude="\\.cache" --exclude="\\.terraform" \
+    "${exclude_args[@]}" \
     "$CODE_DIR" | while IFS= read -r changed_file; do
 
     # Three-way classification

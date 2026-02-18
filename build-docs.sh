@@ -124,6 +124,13 @@ THEMESCRIPT
 }
 
 find_md_files() {
+    local exclude_projects_pattern=""
+    if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+        local joined
+        joined=$(echo "$EXCLUDE_PROJECTS" | tr ' ' '|')
+        exclude_projects_pattern="^${CODE_DIR}/(${joined})/"
+    fi
+
     {
         # Root-level .md files in each project (depth 2 = code/project/file.md)
         find "$CODE_DIR" -maxdepth 2 -mindepth 2 -name "*.md" -type f 2>/dev/null
@@ -132,7 +139,9 @@ find_md_files() {
         for dir in $DOC_DIRS; do
             find "$CODE_DIR" -path "*/$dir/*.md" -type f 2>/dev/null
         done
-    } | grep -Ev "$EXCLUDE_PATTERN" || true | sort -u
+    } | grep -Ev "$EXCLUDE_PATTERN" \
+      | if [[ -n "$exclude_projects_pattern" ]]; then grep -Ev "$exclude_projects_pattern"; else cat; fi \
+      | sort -u
 }
 
 build_file() {
@@ -167,7 +176,7 @@ build_file() {
         --standalone \
         --include-in-header="$STYLE_FILE" \
         --metadata title="$title" \
-        -f markdown -t html5 \
+        -f markdown-tex_math_dollars -t html5 \
         -o "$html_path"
     echo "  Built: $rel_path"
 }
@@ -194,6 +203,17 @@ cleanup_orphans() {
     fi
 }
 
+cleanup_excluded_projects() {
+    [[ -z "${EXCLUDE_PROJECTS:-}" ]] && return 0
+    for project in $EXCLUDE_PROJECTS; do
+        local project_dir="$OUTPUT_DIR/$project"
+        if [[ -d "$project_dir" ]]; then
+            rm -rf "$project_dir"
+            echo "  Removed excluded project output: $project"
+        fi
+    done
+}
+
 build_system_docs() {
     mkdir -p "$OUTPUT_DIR"
     if [[ ! -f "$BUILD_SYSTEM_MD" ]]; then
@@ -204,7 +224,7 @@ build_system_docs() {
         --standalone \
         --include-in-header="$STYLE_FILE" \
         --metadata title="Build System" \
-        -f markdown -t html5 \
+        -f markdown-tex_math_dollars -t html5 \
         -o "$BUILD_SYSTEM_HTML"
     echo "  Built: _build-system.html"
 }
@@ -1011,8 +1031,17 @@ elif [[ "${1:-}" == "--file" && -n "${2:-}" ]]; then
     md_file="$2"
     # Only build if it's a .md file under CODE_DIR
     if [[ "$md_file" == "$CODE_DIR"/* && "$md_file" == *.md ]]; then
+        # Skip excluded projects
+        if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+            rel="${md_file#"$CODE_DIR"/}"
+            project="${rel%%/*}"
+            for excluded in $EXCLUDE_PROJECTS; do
+                [[ "$project" == "$excluded" ]] && exit 0
+            done
+        fi
         build_file "$md_file"
         cleanup_orphans
+        cleanup_excluded_projects
         build_system_docs
         collect_metadata
         build_dashboard
@@ -1026,6 +1055,7 @@ else
         build_file "$f"
     done
     cleanup_orphans
+    cleanup_excluded_projects
     build_system_docs
     collect_metadata
     build_dashboard

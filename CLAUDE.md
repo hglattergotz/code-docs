@@ -8,7 +8,7 @@ Shell-based build system that converts Markdown files from source code projects 
 |------|---------|
 | `code-docs.sh` | Entry-point script — setup wizard, watcher lifecycle (up/down/status) |
 | `.env.example` | Configuration template — copy to `.env` and adjust for your system |
-| `.env` | Local configuration (gitignored) — sets `CODE_DIR`, `OUTPUT_DIR`, `EXTRA_PATH` |
+| `.env` | Local configuration (gitignored) — sets `CODE_DIR`, `OUTPUT_DIR`, `EXTRA_PATH`, `EXCLUDE_PROJECTS` |
 | `build-docs.sh` | Main build script — scans for `.md` files, converts to HTML via pandoc, generates index and dashboard |
 | `watch-docs.sh` | File watcher — runs initial build, then uses fswatch to rebuild on `.md` changes; manages heartbeat |
 | `style.html` | Pandoc HTML template included in every generated page for consistent styling |

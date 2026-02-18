@@ -110,6 +110,16 @@ The following directories are always skipped:
 - `.cache`
 - `.terraform`
 
+### Excluding Projects
+
+To exclude entire projects from the generated docs, set `EXCLUDE_PROJECTS` in `.env` to a space-separated list of directory names:
+
+```bash
+EXCLUDE_PROJECTS="archived-project fork-of-something"
+```
+
+Excluded projects are filtered out of `find_md_files`, skipped in `--file` single-file builds, and ignored by the fswatch watcher. This is useful for forks, archived repos, or projects with sensitive content.
+
 ### Incremental Builds
 
 Each `.md` file is only rebuilt if the HTML output is missing or older than the source file or the style template. This makes repeated builds fast.
