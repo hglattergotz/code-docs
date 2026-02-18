@@ -91,10 +91,7 @@ The watcher and server both run in the same tmux session. Use `./code-docs.sh do
 
 ### Scanning
 
-The build system scans `$CODE_DIR` for `.md` files in two ways:
-
-1. **Root-level**: `.md` files at the top of each project directory (depth 2, e.g., `$CODE_DIR/project/README.md`)
-2. **Doc directories**: `.md` files at any depth inside directories named `docs`, `docks`, or `doc`
+The build system recursively scans `$CODE_DIR` for all `.md` files at any depth under each project directory (e.g., `$CODE_DIR/project/README.md`, `$CODE_DIR/project/docs/api/reference.md`). There is no depth limit — every `.md` file is discovered automatically.
 
 ### Excluded Directories
 
@@ -119,6 +116,19 @@ EXCLUDE_PROJECTS="archived-project fork-of-something"
 ```
 
 Excluded projects are filtered out of `find_md_files`, skipped in `--file` single-file builds, and ignored by the fswatch watcher. This is useful for forks, archived repos, or projects with sensitive content.
+
+### Sidebar Display Style
+
+The sidebar can render project documents in two modes, controlled by `SIDEBAR_STYLE` in `.env`:
+
+- **`tree`** (default): Nested expandable folders that mirror the directory structure. Each folder shows a file count and can be toggled open/closed. Clicking a hash link auto-expands parent folders.
+- **`flat`**: File paths shown as flat links under each project (e.g., `docs/api/reference.html`). This was the original behavior before recursive scanning was added.
+
+```bash
+# In .env
+SIDEBAR_STYLE="tree"   # nested folders (default)
+SIDEBAR_STYLE="flat"   # flat file paths
+```
 
 ### Incremental Builds
 

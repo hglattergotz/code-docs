@@ -8,7 +8,7 @@ Shell-based build system that converts Markdown files from source code projects 
 |------|---------|
 | `code-docs.sh` | Entry-point script — setup wizard, watcher lifecycle (up/down/status) |
 | `.env.example` | Configuration template — copy to `.env` and adjust for your system |
-| `.env` | Local configuration (gitignored) — sets `CODE_DIR`, `OUTPUT_DIR`, `EXTRA_PATH`, `EXCLUDE_PROJECTS` |
+| `.env` | Local configuration (gitignored) — sets `CODE_DIR`, `OUTPUT_DIR`, `EXTRA_PATH`, `EXCLUDE_PROJECTS`, `SIDEBAR_STYLE` |
 | `build-docs.sh` | Main build script — scans for `.md` files, converts to HTML via pandoc, generates index and dashboard |
 | `watch-docs.sh` | File watcher — runs initial build, then uses fswatch to rebuild on `.md` changes; manages heartbeat |
 | `style.html` | Pandoc HTML template included in every generated page for consistent styling |
@@ -40,7 +40,8 @@ Shell-based build system that converts Markdown files from source code projects 
 
 ## Architecture
 
-- **Scanning**: Finds `.md` files at project root level (depth 2) and inside `docs/`, `docks/`, `doc/` directories. Excludes `node_modules`, `.git`, `vendor`, `__pycache__`, `.venv`, `.next`, `dist`, `.cache`, `.terraform`.
+- **Scanning**: Recursively finds all `.md` files at any depth under each project directory. Excludes `node_modules`, `.git`, `vendor`, `__pycache__`, `.venv`, `.next`, `dist`, `.cache`, `.terraform`.
+- **Sidebar display**: Configurable via `SIDEBAR_STYLE` in `.env` — `"tree"` (default) shows nested expandable folders, `"flat"` shows file paths as flat links under each project.
 - **Incremental builds**: Only rebuilds when HTML output is missing or older than the source `.md` or `style.html`.
 - **Conversion**: Uses pandoc with `style.html` template. Extracts first `# heading` as page title.
 - **Index generation**: Creates `index.html` with sidebar navigation, project search, and iframe-based document viewer.

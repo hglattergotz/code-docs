@@ -28,8 +28,8 @@ cp "$_STYLE_SRC" "$STYLE_FILE" 2>/dev/null || STYLE_FILE="$_STYLE_SRC"
 # Directories to skip
 EXCLUDE_PATTERN='/(node_modules|\.git|vendor|__pycache__|\.venv|\.next|dist|\.cache|\.terraform)/'
 
-# Subdirectory names to scan for .md files (in addition to project root)
-DOC_DIRS="docs docks doc"
+# Sidebar display style: "flat" (file paths as flat links) or "tree" (nested folders)
+SIDEBAR_STYLE="${SIDEBAR_STYLE:-tree}"
 
 # Build system docs and dashboard
 BUILD_SYSTEM_MD="$SCRIPT_DIR/build-system.md"
@@ -131,15 +131,8 @@ find_md_files() {
         exclude_projects_pattern="^${CODE_DIR}/(${joined})/"
     fi
 
-    {
-        # Root-level .md files in each project (depth 2 = code/project/file.md)
-        find "$CODE_DIR" -maxdepth 2 -mindepth 2 -name "*.md" -type f 2>/dev/null
-
-        # .md files inside doc directories (any depth within them)
-        for dir in $DOC_DIRS; do
-            find "$CODE_DIR" -path "*/$dir/*.md" -type f 2>/dev/null
-        done
-    } | grep -Ev "$EXCLUDE_PATTERN" \
+    find "$CODE_DIR" -mindepth 2 -name "*.md" -type f 2>/dev/null \
+      | grep -Ev "$EXCLUDE_PATTERN" \
       | if [[ -n "$exclude_projects_pattern" ]]; then grep -Ev "$exclude_projects_pattern"; else cat; fi \
       | sort -u
 }
@@ -460,6 +453,154 @@ FRESHNESS
     echo "  Built: dashboard.html"
 }
 
+emit_sidebar_flat() {
+    local index="$1"
+    local tmp="$2"
+    local current_project=""
+
+    while IFS= read -r html_file; do
+        local rel="${html_file#"$OUTPUT_DIR"/}"
+        local project="${rel%%/*}"
+
+        if [[ "$project" != "$current_project" ]]; then
+            if [[ -n "$current_project" ]]; then
+                echo "    </div>" >> "$index"
+                echo "  </div>" >> "$index"
+            fi
+            local doc_count
+            doc_count=$(grep -c "^$OUTPUT_DIR/$project/" "$tmp" || true)
+            echo "  <div class=\"project\" data-name=\"$project\">" >> "$index"
+            echo "    <div class=\"project-name\" onclick=\"toggleProject(this)\"><span class=\"arrow\">&#9654;</span>$project<span class=\"count\">$doc_count</span></div>" >> "$index"
+            echo "    <div class=\"doc-list\">" >> "$index"
+            current_project="$project"
+        fi
+
+        local name="${rel#"$project"/}"
+        echo "      <a class=\"doc-item\" onclick=\"loadDoc(this, '$rel')\" title=\"$name\">$name</a>" >> "$index"
+    done < "$tmp"
+
+    if [[ -n "$current_project" ]]; then
+        echo "    </div>" >> "$index"
+        echo "  </div>" >> "$index"
+    fi
+}
+
+emit_sidebar_tree() {
+    local index="$1"
+    local tmp="$2"
+    local current_project=""
+    # Directory stack tracks open folder names at each nesting level
+    local dir_stack=()
+
+    while IFS= read -r html_file; do
+        local rel="${html_file#"$OUTPUT_DIR"/}"
+        local project="${rel%%/*}"
+        local within="${rel#"$project"/}"
+
+        # New project — close previous project (all open folders + doc-list + project div)
+        if [[ "$project" != "$current_project" ]]; then
+            if [[ -n "$current_project" ]]; then
+                # Close all open folders
+                local k=${#dir_stack[@]}
+                while [[ $k -gt 0 ]]; do
+                    k=$((k - 1))
+                    echo "      </div>" >> "$index"   # folder-list
+                    echo "      </div>" >> "$index"   # folder
+                done
+                echo "    </div>" >> "$index"   # doc-list
+                echo "  </div>" >> "$index"     # project
+            fi
+            dir_stack=()
+            local doc_count
+            doc_count=$(grep -c "^$OUTPUT_DIR/$project/" "$tmp" || true)
+            echo "  <div class=\"project\" data-name=\"$project\">" >> "$index"
+            echo "    <div class=\"project-name\" onclick=\"toggleProject(this)\"><span class=\"arrow\">&#9654;</span>$project<span class=\"count\">$doc_count</span></div>" >> "$index"
+            echo "    <div class=\"doc-list\">" >> "$index"
+            current_project="$project"
+        fi
+
+        # Split the within-project path into directory components and filename
+        local file_dir=""
+        local file_name="$within"
+        if [[ "$within" == */* ]]; then
+            file_dir="${within%/*}"
+            file_name="${within##*/}"
+        fi
+
+        # Build array of directory components for this file
+        local target_dirs=()
+        if [[ -n "$file_dir" ]]; then
+            IFS='/' read -ra target_dirs <<< "$file_dir"
+        fi
+
+        # Find common prefix length between dir_stack and target_dirs
+        local common=0
+        local stack_len=${#dir_stack[@]}
+        local target_len=${#target_dirs[@]}
+        while [[ $common -lt $stack_len && $common -lt $target_len ]]; do
+            if [[ "${dir_stack[$common]}" == "${target_dirs[$common]}" ]]; then
+                common=$((common + 1))
+            else
+                break
+            fi
+        done
+
+        # Close folders that diverged (from deepest back to the divergence point)
+        local close_from=$((stack_len - 1))
+        while [[ $close_from -ge $common ]]; do
+            echo "      </div>" >> "$index"   # folder-list
+            echo "      </div>" >> "$index"   # folder
+            close_from=$((close_from - 1))
+        done
+
+        # Trim the stack to the common prefix
+        if [[ $common -eq 0 ]]; then
+            dir_stack=()
+        else
+            dir_stack=("${dir_stack[@]:0:$common}")
+        fi
+
+        # Open new folders from the common prefix to the target
+        local open_from=$common
+        while [[ $open_from -lt $target_len ]]; do
+            local folder_name="${target_dirs[$open_from]}"
+            # Count files in this folder subtree
+            local folder_prefix="$OUTPUT_DIR/$project/"
+            local j=0
+            while [[ $j -le $open_from ]]; do
+                folder_prefix="${folder_prefix}${target_dirs[$j]}/"
+                j=$((j + 1))
+            done
+            local folder_count
+            folder_count=$(grep -c "^${folder_prefix}" "$tmp" || true)
+            local pad_depth=$((open_from + 1))
+            local pad_px=$(( pad_depth * 16 + 18 ))
+            echo "      <div class=\"folder\" data-name=\"$folder_name\">" >> "$index"
+            echo "        <div class=\"folder-name\" onclick=\"toggleFolder(this)\" style=\"padding-left: ${pad_px}px\"><span class=\"arrow\">&#9654;</span>$folder_name<span class=\"count\">$folder_count</span></div>" >> "$index"
+            echo "        <div class=\"folder-list\">" >> "$index"
+            dir_stack+=("$folder_name")
+            open_from=$((open_from + 1))
+        done
+
+        # Emit the file link
+        local depth=${#dir_stack[@]}
+        local file_pad=$(( (depth + 1) * 16 + 18 ))
+        echo "      <a class=\"doc-item\" onclick=\"loadDoc(this, '$rel')\" title=\"$within\" style=\"padding-left: ${file_pad}px\">$file_name</a>" >> "$index"
+    done < "$tmp"
+
+    # Close remaining open folders and last project
+    if [[ -n "$current_project" ]]; then
+        local k=${#dir_stack[@]}
+        while [[ $k -gt 0 ]]; do
+            k=$((k - 1))
+            echo "      </div>" >> "$index"   # folder-list
+            echo "      </div>" >> "$index"   # folder
+        done
+        echo "    </div>" >> "$index"   # doc-list
+        echo "  </div>" >> "$index"     # project
+    fi
+}
+
 build_index() {
     local index="$OUTPUT_DIR/index.html"
     local tmp
@@ -721,6 +862,41 @@ INDEX_HEAD_TOP
   }
   .content iframe.visible { display: block; }
   .project.hidden { display: none; }
+  .folder { }
+  .folder-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-body);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .folder-name:hover { background: var(--sidebar-hover); }
+  .folder-name .arrow {
+    font-size: 9px;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+    flex-shrink: 0;
+    width: 10px;
+  }
+  .folder-name.open .arrow { transform: rotate(90deg); }
+  .folder-name .count {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--count-bg);
+    padding: 1px 6px;
+    border-radius: 8px;
+  }
+  .folder-list {
+    display: none;
+  }
+  .folder-list.open { display: block; }
+  .folder.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -746,36 +922,13 @@ INDEX_HEAD_TOP
   <div class="project-list" id="projectList">
 INDEX_HEAD_STYLE
 
-    local current_project=""
     local project_count=0
+    project_count=$(awk -F/ '{print $1}' <<< "$(while IFS= read -r f; do echo "${f#"$OUTPUT_DIR"/}"; done < "$tmp")" | sort -u | wc -l | tr -d ' ')
 
-    while IFS= read -r html_file; do
-        local rel="${html_file#"$OUTPUT_DIR"/}"
-        local project="${rel%%/*}"
-
-        if [[ "$project" != "$current_project" ]]; then
-            if [[ -n "$current_project" ]]; then
-                echo "    </div>" >> "$index"
-                echo "  </div>" >> "$index"
-            fi
-            project_count=$((project_count + 1))
-            # Count docs for this project
-            local doc_count
-            doc_count=$(grep -c "^$OUTPUT_DIR/$project/" "$tmp" || true)
-            echo "  <div class=\"project\" data-name=\"$project\">" >> "$index"
-            echo "    <div class=\"project-name\" onclick=\"toggleProject(this)\"><span class=\"arrow\">&#9654;</span>$project<span class=\"count\">$doc_count</span></div>" >> "$index"
-            echo "    <div class=\"doc-list\">" >> "$index"
-            current_project="$project"
-        fi
-
-        local name="${rel#"$project"/}"
-        echo "      <a class=\"doc-item\" onclick=\"loadDoc(this, '$rel')\" title=\"$name\">$name</a>" >> "$index"
-    done < "$tmp"
-
-    # Close last project if we had any
-    if [[ -n "$current_project" ]]; then
-        echo "    </div>" >> "$index"
-        echo "  </div>" >> "$index"
+    if [[ "$SIDEBAR_STYLE" == "tree" ]]; then
+        emit_sidebar_tree "$index" "$tmp"
+    else
+        emit_sidebar_flat "$index" "$tmp"
     fi
 
     cat >> "$index" << 'FOOTER'
@@ -820,6 +973,11 @@ function toggleProject(el) {
   el.classList.toggle('open');
   docList.classList.toggle('open');
 }
+function toggleFolder(el) {
+  var folderList = el.nextElementSibling;
+  el.classList.toggle('open');
+  folderList.classList.toggle('open');
+}
 function loadIframe(path) {
   var frame = document.getElementById('docFrame');
   var placeholder = document.getElementById('placeholder');
@@ -854,15 +1012,24 @@ function highlightSidebarLink(path) {
     var onclick = docLinks[i].getAttribute('onclick') || '';
     if (onclick.indexOf("'" + path + "'") !== -1) {
       docLinks[i].classList.add('active');
-      // Expand the parent project if collapsed
-      var project = docLinks[i].closest('.project');
-      if (project) {
-        var nameEl = project.querySelector('.project-name');
-        var docList = project.querySelector('.doc-list');
-        if (nameEl && !nameEl.classList.contains('open')) {
-          nameEl.classList.add('open');
-          if (docList) docList.classList.add('open');
+      // Walk up the DOM expanding parent folders and the parent project
+      var node = docLinks[i].parentElement;
+      while (node && !node.classList.contains('project-list')) {
+        if (node.classList.contains('folder-list')) {
+          if (!node.classList.contains('open')) node.classList.add('open');
+          var folderNameEl = node.previousElementSibling;
+          if (folderNameEl && folderNameEl.classList.contains('folder-name') && !folderNameEl.classList.contains('open')) {
+            folderNameEl.classList.add('open');
+          }
         }
+        if (node.classList.contains('doc-list')) {
+          if (!node.classList.contains('open')) node.classList.add('open');
+          var projNameEl = node.previousElementSibling;
+          if (projNameEl && projNameEl.classList.contains('project-name') && !projNameEl.classList.contains('open')) {
+            projNameEl.classList.add('open');
+          }
+        }
+        node = node.parentElement;
       }
       return;
     }
@@ -889,9 +1056,13 @@ document.getElementById('search').addEventListener('input', function() {
   document.querySelectorAll('.project').forEach(function(p) {
     var name = p.dataset.name.toLowerCase();
     var docs = p.querySelectorAll('.doc-item');
+    var folders = p.querySelectorAll('.folder');
     var hasMatch = name.indexOf(q) !== -1;
     docs.forEach(function(d) {
       if (d.textContent.toLowerCase().indexOf(q) !== -1) hasMatch = true;
+    });
+    folders.forEach(function(f) {
+      if (f.dataset.name && f.dataset.name.toLowerCase().indexOf(q) !== -1) hasMatch = true;
     });
     p.classList.toggle('hidden', !hasMatch);
   });
