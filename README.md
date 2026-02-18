@@ -1,8 +1,8 @@
 # Code Docs
 
-Converts Markdown files from your source code projects into a browsable HTML documentation site with sidebar navigation, search, and a project dashboard.
+Think GitHub Pages, but local and for all your projects at once. Point it at a folder of repositories and it turns every Markdown file it finds into a browsable HTML documentation site with sidebar navigation, search, and a project dashboard.
 
-It recursively scans a directory of projects for `.md` files, converts them to styled HTML via pandoc, and generates an index page that ties everything together. A file watcher rebuilds incrementally as you edit.
+It recursively scans the directory for `.md` files, converts them to styled HTML via pandoc, and generates an index page that ties everything together. A file watcher rebuilds incrementally as you edit — no pushing to a remote, no deploy step.
 
 ## Quick Start
 
