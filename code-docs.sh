@@ -376,7 +376,7 @@ case "${1:-}" in
     status)
         cmd_status
         ;;
-    help)
+    help|--help|-h)
         cmd_help
         ;;
     *)

@@ -1183,7 +1183,30 @@ write_heartbeat() {
 
 # --- Main ---
 
-if [[ "${1:-}" == "--clean" ]]; then
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    cat << 'USAGE'
+Usage: build-docs.sh [option]
+
+Options:
+  (none)           Full rebuild of all docs + index
+  --file <path>    Rebuild a single .md file + index
+  --clean          Remove all output and do a full rebuild
+  --help, -h       Show this help message
+
+Environment (set in .env):
+  CODE_DIR           Source directory containing projects with .md files
+  OUTPUT_DIR         Directory where HTML output is written
+  EXCLUDE_PROJECTS   Space-separated project names to skip
+  SIDEBAR_STYLE      Sidebar mode: "tree" (default) or "flat"
+
+Examples:
+  ./build-docs.sh
+  ./build-docs.sh --file $CODE_DIR/my-project/README.md
+  ./build-docs.sh --clean
+USAGE
+    exit 0
+
+elif [[ "${1:-}" == "--clean" ]]; then
     echo "Cleaning $OUTPUT_DIR..."
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
