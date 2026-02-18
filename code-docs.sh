@@ -2,13 +2,15 @@
 # code-docs.sh - Entry-point for the code-docs build system
 #
 # Usage:
-#   ./code-docs.sh setup          Interactive .env wizard
-#   ./code-docs.sh up             Start watcher (auto-setup if no .env)
-#   ./code-docs.sh up --build     Full build before starting watcher
-#   ./code-docs.sh up --clean     Clean build before starting watcher
-#   ./code-docs.sh down           Stop watcher
-#   ./code-docs.sh status         Show watcher state
-#   ./code-docs.sh help           Usage info
+#   ./code-docs.sh setup                Interactive .env wizard
+#   ./code-docs.sh up                   Start watcher (auto-setup if no .env)
+#   ./code-docs.sh up --build           Full build before starting watcher
+#   ./code-docs.sh up --clean           Clean build before starting watcher
+#   ./code-docs.sh up --serve           Start watcher + HTTP server on localhost:8000
+#   ./code-docs.sh up --serve --build   Build, then start watcher + server
+#   ./code-docs.sh down                 Stop watcher (and server if running)
+#   ./code-docs.sh status               Show watcher state
+#   ./code-docs.sh help                 Usage info
 
 set -uo pipefail
 
@@ -28,11 +30,24 @@ load_env() {
 
 check_deps() {
     local missing=()
+    local serve_mode=false
+
+    # Check if --serve flag is present in arguments
+    for arg in "$@"; do
+        [[ "$arg" == "--serve" ]] && serve_mode=true
+    done
+
+    # Required deps for watcher
     for cmd in pandoc fswatch tmux; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
     done
+
+    # Python required only for --serve
+    if [[ "$serve_mode" == true ]] && ! command -v python3 &>/dev/null; then
+        missing+=("python3")
+    fi
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "Missing dependencies: ${missing[*]}"
@@ -155,6 +170,18 @@ EOF
 
 cmd_up() {
     local flag="${1:-}"
+    local flag2="${2:-}"
+    local serve=false
+    local build_mode=""
+
+    # Parse flags (support --serve alone or combined with --build/--clean)
+    for arg in "$flag" "$flag2"; do
+        case "$arg" in
+            --serve) serve=true ;;
+            --clean) build_mode="clean" ;;
+            --build) build_mode="build" ;;
+        esac
+    done
 
     # Auto-setup if no .env
     if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
@@ -166,7 +193,7 @@ cmd_up() {
 
     load_env
 
-    if ! check_deps; then
+    if ! check_deps "$flag" "$flag2"; then
         exit 1
     fi
 
@@ -177,24 +204,49 @@ cmd_up() {
     fi
 
     # Pre-build if requested
-    if [[ "$flag" == "--clean" ]]; then
+    if [[ "$build_mode" == "clean" ]]; then
         echo "Running clean build..."
         "$SCRIPT_DIR/build-docs.sh" --clean
         echo ""
-    elif [[ "$flag" == "--build" ]]; then
+    elif [[ "$build_mode" == "build" ]]; then
         echo "Running full build..."
         "$SCRIPT_DIR/build-docs.sh"
         echo ""
     fi
 
-    # Start watcher in tmux
-    tmux new-session -d -s "$SESSION_NAME" "$SCRIPT_DIR/watch-docs.sh"
+    # Start watcher (with or without server)
+    if [[ "$serve" == true ]]; then
+        local port="${HTTP_PORT:-8000}"
 
-    echo "Watcher started (tmux session: $SESSION_NAME)."
-    echo ""
-    echo "  Check status:  ./code-docs.sh status"
-    echo "  View output:   tmux attach -t $SESSION_NAME"
-    echo "  Stop watcher:  ./code-docs.sh down"
+        # Create tmux session with watcher
+        tmux new-session -d -s "$SESSION_NAME" "$SCRIPT_DIR/watch-docs.sh"
+
+        # Add http.server in a split pane
+        tmux split-window -t "$SESSION_NAME" -h "cd '$OUTPUT_DIR' && python3 -m http.server $port"
+
+        # Balance panes (50/50 split)
+        tmux select-layout -t "$SESSION_NAME" even-horizontal
+
+        echo "Watcher and server started (tmux session: $SESSION_NAME)."
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Open in browser:  http://localhost:$port/index.html"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "Commands:"
+        echo "  View logs:     tmux attach -t $SESSION_NAME"
+        echo "  Stop both:     ./code-docs.sh down"
+        echo "  Check status:  ./code-docs.sh status"
+    else
+        # Original behavior: watcher only
+        tmux new-session -d -s "$SESSION_NAME" "$SCRIPT_DIR/watch-docs.sh"
+
+        echo "Watcher started (tmux session: $SESSION_NAME)."
+        echo ""
+        echo "  Check status:  ./code-docs.sh status"
+        echo "  View output:   tmux attach -t $SESSION_NAME"
+        echo "  Stop watcher:  ./code-docs.sh down"
+    fi
 }
 
 cmd_down() {
@@ -213,6 +265,14 @@ cmd_status() {
     # Watcher state
     if session_exists; then
         echo "Watcher: running (tmux session: $SESSION_NAME)"
+
+        # Check if HTTP server is running in the session
+        if load_env; then
+            local port="${HTTP_PORT:-8000}"
+            if pgrep -f "python.*http.server.*$port" > /dev/null 2>&1; then
+                echo "Server:  http://localhost:$port"
+            fi
+        fi
     else
         echo "Watcher: stopped"
     fi
@@ -286,15 +346,18 @@ Commands:
   up             Start the file watcher (auto-runs setup if no .env)
   up --build     Run a full build, then start the watcher
   up --clean     Clean build (remove all output), then start the watcher
-  down           Stop the file watcher
+  up --serve     Start watcher + HTTP server on localhost:8000
+  down           Stop the file watcher (and server if running)
   status         Show watcher state and configuration
   help           Show this help message
 
 Examples:
-  ./code-docs.sh setup          # First-time setup
-  ./code-docs.sh up             # Start watching for changes
-  ./code-docs.sh status         # Check if watcher is running
-  ./code-docs.sh down           # Stop the watcher
+  ./code-docs.sh setup              # First-time setup
+  ./code-docs.sh up                 # Start watching for changes
+  ./code-docs.sh up --serve         # Start watcher + local web server
+  ./code-docs.sh up --serve --build # Build first, then serve
+  ./code-docs.sh status             # Check if watcher/server running
+  ./code-docs.sh down               # Stop everything
 USAGE
 }
 
@@ -305,7 +368,7 @@ case "${1:-}" in
         cmd_setup
         ;;
     up)
-        cmd_up "${2:-}"
+        cmd_up "${2:-}" "${3:-}"
         ;;
     down)
         cmd_down

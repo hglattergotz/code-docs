@@ -33,13 +33,15 @@ A shell-based build system that converts Markdown files from source code project
 `code-docs.sh` is the main entry-point for setup and watcher management:
 
 ```bash
-./code-docs.sh setup          # Interactive .env configuration wizard
-./code-docs.sh up             # Start the file watcher (auto-runs setup if no .env)
-./code-docs.sh up --build     # Full build, then start watcher
-./code-docs.sh up --clean     # Clean build, then start watcher
-./code-docs.sh down           # Stop the file watcher
-./code-docs.sh status         # Show watcher state and configuration
-./code-docs.sh help           # Show usage info
+./code-docs.sh setup              # Interactive .env configuration wizard
+./code-docs.sh up                 # Start the file watcher (auto-runs setup if no .env)
+./code-docs.sh up --build         # Full build, then start watcher
+./code-docs.sh up --clean         # Clean build, then start watcher
+./code-docs.sh up --serve         # Start watcher + HTTP server on localhost:8000
+./code-docs.sh up --serve --build # Build then serve over HTTP
+./code-docs.sh down               # Stop the file watcher (and server if running)
+./code-docs.sh status             # Show watcher state and configuration
+./code-docs.sh help               # Show usage info
 ```
 
 ### Manual Builds
@@ -66,6 +68,24 @@ tmux attach -t code-docs
 ```
 
 > **Note:** A LaunchAgent (`com.user.code-docs-watcher.plist`) was previously used but abandoned because macOS Full Disk Access restrictions prevent launchd-spawned processes from accessing `~/Documents/`. Running the watcher from a terminal (via tmux) inherits the terminal's FDA permissions and works reliably.
+
+### Local Web Server
+
+For a better browsing experience with direct URLs and browser refresh support:
+
+```bash
+./code-docs.sh up --serve         # Start watcher + server
+```
+
+This starts a Python HTTP server at `http://localhost:8000` alongside the file watcher. You get:
+- Direct doc URLs like `http://localhost:8000/project/README.html`
+- Browser refresh works (no iframe context loss)
+- Bookmarkable and shareable links
+- Standard browser navigation (back/forward buttons)
+
+The watcher and server both run in the same tmux session. Use `./code-docs.sh down` to stop both.
+
+> **Note:** Without `--serve`, docs open as `file:///` URLs with iframe-based navigation in index.html. With `--serve`, each doc is accessible at its own HTTP URL.
 
 ## How It Works
 

@@ -23,7 +23,10 @@ Shell-based build system that converts Markdown files from source code projects 
 # Start the file watcher
 ./code-docs.sh up
 
-# Stop the file watcher
+# Start watcher + local web server (for browser refresh, direct URLs)
+./code-docs.sh up --serve
+
+# Stop the file watcher (and server if running)
 ./code-docs.sh down
 
 # Check watcher status
@@ -50,6 +53,23 @@ Shell-based build system that converts Markdown files from source code projects 
 - **pandoc** — Markdown to HTML conversion
 - **fswatch** — File system monitoring
 - Both installed via Homebrew (path configured via `EXTRA_PATH` in `.env`)
+
+## Local Web Server
+
+The `--serve` flag starts a Python HTTP server alongside the watcher, giving you:
+
+- **Browser refresh works** — reload docs directly without losing context
+- **Direct URLs** — navigate to `http://localhost:8000/project/README.html`
+- **Bookmarkable** — save links to specific docs
+- **Shareable** — send links to teammates (if they have the server running)
+
+```bash
+./code-docs.sh up --serve          # Start at http://localhost:8000
+./code-docs.sh up --serve --build  # Build first, then serve
+```
+
+Without `--serve`, docs open via `file:///` URLs with iframe navigation.
+With `--serve`, docs are served over HTTP with real URLs and navigation.
 
 ## Theme System
 

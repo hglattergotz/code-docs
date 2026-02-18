@@ -800,28 +800,70 @@ function toggleProject(el) {
   el.classList.toggle('open');
   docList.classList.toggle('open');
 }
-function loadTool(el, path) {
-  document.querySelectorAll('.sidebar-tools a.active').forEach(function(a) { a.classList.remove('active'); });
-  document.querySelectorAll('.doc-item.active').forEach(function(d) { d.classList.remove('active'); });
-  if (el) el.classList.add('active');
+function loadIframe(path) {
   var frame = document.getElementById('docFrame');
   var placeholder = document.getElementById('placeholder');
   frame.src = path + '?t=' + Date.now();
   frame.classList.add('visible');
   placeholder.style.display = 'none';
   window.__currentDocPath = path;
+}
+function loadTool(el, path) {
+  window.location.hash = path;
 }
 function loadDoc(el, path) {
+  window.location.hash = path;
+}
+
+// Highlight the matching sidebar link for a given doc path
+function highlightSidebarLink(path) {
   document.querySelectorAll('.doc-item.active').forEach(function(d) { d.classList.remove('active'); });
   document.querySelectorAll('.sidebar-tools a.active').forEach(function(a) { a.classList.remove('active'); });
-  if (el) el.classList.add('active');
-  var frame = document.getElementById('docFrame');
-  var placeholder = document.getElementById('placeholder');
-  frame.src = path + '?t=' + Date.now();
-  frame.classList.add('visible');
-  placeholder.style.display = 'none';
-  window.__currentDocPath = path;
+  // Check tool links (dashboard, build system)
+  var toolLinks = document.querySelectorAll('.sidebar-tools a');
+  for (var i = 0; i < toolLinks.length; i++) {
+    var onclick = toolLinks[i].getAttribute('onclick') || '';
+    if (onclick.indexOf("'" + path + "'") !== -1) {
+      toolLinks[i].classList.add('active');
+      return;
+    }
+  }
+  // Check doc links
+  var docLinks = document.querySelectorAll('.doc-item');
+  for (var i = 0; i < docLinks.length; i++) {
+    var onclick = docLinks[i].getAttribute('onclick') || '';
+    if (onclick.indexOf("'" + path + "'") !== -1) {
+      docLinks[i].classList.add('active');
+      // Expand the parent project if collapsed
+      var project = docLinks[i].closest('.project');
+      if (project) {
+        var nameEl = project.querySelector('.project-name');
+        var docList = project.querySelector('.doc-list');
+        if (nameEl && !nameEl.classList.contains('open')) {
+          nameEl.classList.add('open');
+          if (docList) docList.classList.add('open');
+        }
+      }
+      return;
+    }
+  }
 }
+
+// Hash change handler — single source of truth for navigation
+function onHashChange() {
+  var hash = window.location.hash.replace(/^#/, '');
+  if (hash) {
+    loadIframe(hash);
+    highlightSidebarLink(hash);
+  } else {
+    loadIframe('dashboard.html');
+    highlightSidebarLink('dashboard.html');
+  }
+}
+window.addEventListener('hashchange', onHashChange);
+
+// Initial load: read hash or default to dashboard
+onHashChange();
 document.getElementById('search').addEventListener('input', function() {
   var q = this.value.toLowerCase();
   document.querySelectorAll('.project').forEach(function(p) {
@@ -925,9 +967,7 @@ function checkForReload() {
 }
 setInterval(checkForReload, 5000);
 
-// --- Initial dashboard load with cache buster ---
-window.__currentDocPath = 'dashboard.html';
-document.getElementById('docFrame').src = 'dashboard.html?t=' + Date.now();
+// Initial load handled by onHashChange() above
 </script>
 </body>
 </html>
