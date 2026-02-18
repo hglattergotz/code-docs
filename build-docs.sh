@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-docs.sh - Convert markdown files from ~/Documents/code/ projects to HTML
+# build-docs.sh - Convert markdown files from source code projects to HTML
 #
 # Usage:
 #   build-docs.sh              Full rebuild of all docs + index
@@ -8,12 +8,22 @@
 
 set -uo pipefail
 
-export PATH="/opt/homebrew/bin:$PATH"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
-CODE_DIR="$HOME/Documents/code"
-OUTPUT_DIR="$HOME/Documents/code-html"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-STYLE_FILE="$SCRIPT_DIR/style.html"
+# Load configuration
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    source "$SCRIPT_DIR/.env"
+else
+    echo "Error: $SCRIPT_DIR/.env not found. Copy .env.example to .env and configure." >&2
+    exit 1
+fi
+
+export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$PATH"
+_STYLE_SRC="$SCRIPT_DIR/style.html"
+# Copy style to /tmp to avoid macOS Full Disk Access restrictions when
+# pandoc is invoked by launchd (which lacks FDA for ~/Documents/).
+STYLE_FILE="${TMPDIR:-/tmp}/code-docs-style.html"
+cp "$_STYLE_SRC" "$STYLE_FILE" 2>/dev/null || STYLE_FILE="$_STYLE_SRC"
 
 # Directories to skip
 EXCLUDE_PATTERN='/(node_modules|\.git|vendor|__pycache__|\.venv|\.next|dist|\.cache|\.terraform)/'
@@ -25,6 +35,93 @@ DOC_DIRS="docs docks doc"
 BUILD_SYSTEM_MD="$SCRIPT_DIR/build-system.md"
 BUILD_SYSTEM_HTML="$OUTPUT_DIR/_build-system.html"
 DASHBOARD_HTML="$OUTPUT_DIR/dashboard.html"
+
+# --- Theme helpers (shared between dashboard and index) ---
+
+# Emit CSS custom properties for light/dark theme.
+# Usage: emit_theme_css_vars >> "$file"
+emit_theme_css_vars() {
+    cat << 'THEMEVARS'
+  :root {
+    --bg-body: #f8fafc;
+    --bg-surface: white;
+    --bg-code: #f1f5f9;
+    --bg-thead: #f1f5f9;
+    --bg-row-even: #f8fafc;
+    --bg-blockquote: #eff6ff;
+    --border-color: #e2e8f0;
+    --border-blockquote: #bfdbfe;
+    --border-blockquote-left: #2563eb;
+    --text-primary: #0f172a;
+    --text-body: #334155;
+    --text-paragraph: #475569;
+    --text-muted: #94a3b8;
+    --text-code: #334155;
+    --text-blockquote: #1e40af;
+    --link-color: #2563eb;
+    --hr-color: #e2e8f0;
+    --img-border: #e2e8f0;
+    --badge-green-bg: #dcfce7; --badge-green-fg: #166534;
+    --badge-yellow-bg: #fef9c3; --badge-yellow-fg: #854d0e;
+    --badge-orange-bg: #ffedd5; --badge-orange-fg: #9a3412;
+    --badge-red-bg: #fecaca; --badge-red-fg: #991b1b;
+    --fc-green-bg: #dcfce7; --fc-green-fg: #166534;
+    --fc-yellow-bg: #fef9c3; --fc-yellow-fg: #854d0e;
+    --fc-orange-bg: #ffedd5; --fc-orange-fg: #9a3412;
+    --fc-red-bg: #fecaca; --fc-red-fg: #991b1b;
+  }
+  [data-theme="dark"] {
+    --bg-body: #0f172a;
+    --bg-surface: #1e293b;
+    --bg-code: #1e293b;
+    --bg-thead: #1e293b;
+    --bg-row-even: #162032;
+    --bg-blockquote: #1e293b;
+    --border-color: #334155;
+    --border-blockquote: #334155;
+    --border-blockquote-left: #60a5fa;
+    --text-primary: #e2e8f0;
+    --text-body: #cbd5e1;
+    --text-paragraph: #94a3b8;
+    --text-muted: #64748b;
+    --text-code: #cbd5e1;
+    --text-blockquote: #93c5fd;
+    --link-color: #60a5fa;
+    --hr-color: #334155;
+    --img-border: #334155;
+    --badge-green-bg: #052e16; --badge-green-fg: #86efac;
+    --badge-yellow-bg: #422006; --badge-yellow-fg: #fde047;
+    --badge-orange-bg: #431407; --badge-orange-fg: #fdba74;
+    --badge-red-bg: #450a0a; --badge-red-fg: #fca5a5;
+    --fc-green-bg: #052e16; --fc-green-fg: #86efac;
+    --fc-yellow-bg: #422006; --fc-yellow-fg: #fde047;
+    --fc-orange-bg: #431407; --fc-orange-fg: #fdba74;
+    --fc-red-bg: #450a0a; --fc-red-fg: #fca5a5;
+  }
+THEMEVARS
+}
+
+# Emit JS that reads theme from parent iframe and listens for changes.
+# Usage: emit_theme_listener_script >> "$file"
+emit_theme_listener_script() {
+    cat << 'THEMESCRIPT'
+<script>
+(function() {
+  var theme = 'light';
+  try {
+    var parentTheme = window.parent.document.documentElement.getAttribute('data-theme');
+    if (parentTheme) theme = parentTheme;
+  } catch(e) {}
+  document.documentElement.setAttribute('data-theme', theme);
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'theme-change') {
+      document.documentElement.setAttribute('data-theme', e.data.theme);
+    }
+  });
+})();
+</script>
+THEMESCRIPT
+}
 
 find_md_files() {
     {
@@ -73,6 +170,28 @@ build_file() {
         -f markdown -t html5 \
         -o "$html_path"
     echo "  Built: $rel_path"
+}
+
+cleanup_orphans() {
+    local removed=0
+    while IFS= read -r html_file; do
+        local rel="${html_file#"$OUTPUT_DIR"/}"
+        local md_file="$CODE_DIR/${rel%.html}.md"
+        if [[ ! -f "$md_file" ]]; then
+            rm -f "$html_file"
+            removed=$((removed + 1))
+            echo "  Removed orphan: $rel"
+        fi
+    done < <(find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f 2>/dev/null)
+
+    # Remove empty directories (excluding output root)
+    if [[ -d "$OUTPUT_DIR" ]]; then
+        find "$OUTPUT_DIR" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    fi
+
+    if [[ $removed -gt 0 ]]; then
+        echo "  Cleaned up $removed orphan(s)"
+    fi
 }
 
 build_system_docs() {
@@ -163,45 +282,50 @@ build_dashboard() {
         fi
     done < "$file_list"
 
-    cat > "$DASHBOARD_HTML" << 'DASH_HEAD'
+    # Write dashboard HTML header with theme-aware CSS
+    cat > "$DASHBOARD_HTML" << 'DASH_HEAD_TOP'
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 2h12l8 8v18a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z' fill='%23e2e8f0' stroke='%2394a3b8' stroke-width='1.5'/%3E%3Cpath d='M18 2v6a2 2 0 002 2h6' fill='%23cbd5e1' stroke='%2394a3b8' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cline x1='8' y1='15' x2='16' y2='15' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='8' y1='19' x2='14' y2='19' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='8' y1='23' x2='12' y2='23' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='22' cy='22' r='5' fill='white' stroke='%232563eb' stroke-width='2'/%3E%3Cline x1='25.5' y1='25.5' x2='30' y2='30' stroke='%232563eb' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+DASH_HEAD_TOP
+    emit_theme_css_vars >> "$DASHBOARD_HTML"
+    cat >> "$DASHBOARD_HTML" << 'DASH_HEAD_STYLE'
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: #f8fafc;
-    color: #334155;
+    background: var(--bg-body);
+    color: var(--text-body);
     line-height: 1.5;
     padding: 32px 48px;
   }
-  h1 { font-size: 24px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
-  .subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 24px; }
-  h2 { font-size: 16px; font-weight: 600; color: #0f172a; margin: 32px 0 12px; }
+  h1 { font-size: 24px; font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 24px; }
+  h2 { font-size: 16px; font-weight: 600; color: var(--text-primary); margin: 32px 0 12px; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
   .card {
-    background: white;
-    border: 1px solid #e2e8f0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 16px;
   }
-  .card .label { font-size: 11px; font-weight: 500; text-transform: uppercase; color: #94a3b8; margin-bottom: 4px; }
-  .card .value { font-size: 28px; font-weight: 700; color: #0f172a; }
-  .card .detail { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+  .card .label { font-size: 11px; font-weight: 500; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; }
+  .card .value { font-size: 28px; font-weight: 700; color: var(--text-primary); }
+  .card .detail { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-  table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
-  thead th { background: #f1f5f9; font-weight: 600; color: #0f172a; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
-  th, td { padding: 10px 16px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+  thead th { background: var(--bg-thead); font-weight: 600; color: var(--text-primary); text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+  th, td { padding: 10px 16px; border-bottom: 1px solid var(--border-color); font-size: 13px; }
   tbody tr:last-child td { border-bottom: none; }
-  tbody tr:hover { background: #f8fafc; }
+  tbody tr:hover { background: var(--bg-row-even); }
 
-  a { color: #2563eb; text-decoration: none; cursor: pointer; }
+  a { color: var(--link-color); text-decoration: none; cursor: pointer; }
   a:hover { text-decoration: underline; }
 
   .badge {
@@ -211,10 +335,10 @@ build_dashboard() {
     font-size: 11px;
     font-weight: 500;
   }
-  .badge-green { background: #dcfce7; color: #166534; }
-  .badge-yellow { background: #fef9c3; color: #854d0e; }
-  .badge-orange { background: #ffedd5; color: #9a3412; }
-  .badge-red { background: #fecaca; color: #991b1b; }
+  .badge-green { background: var(--badge-green-bg); color: var(--badge-green-fg); }
+  .badge-yellow { background: var(--badge-yellow-bg); color: var(--badge-yellow-fg); }
+  .badge-orange { background: var(--badge-orange-bg); color: var(--badge-orange-fg); }
+  .badge-red { background: var(--badge-red-bg); color: var(--badge-red-fg); }
 
   .freshness-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 32px; }
   .freshness-card {
@@ -224,15 +348,15 @@ build_dashboard() {
   }
   .freshness-card .f-value { font-size: 24px; font-weight: 700; }
   .freshness-card .f-label { font-size: 11px; font-weight: 500; margin-top: 2px; }
-  .fc-green { background: #dcfce7; color: #166534; }
-  .fc-yellow { background: #fef9c3; color: #854d0e; }
-  .fc-orange { background: #ffedd5; color: #9a3412; }
-  .fc-red { background: #fecaca; color: #991b1b; }
+  .fc-green { background: var(--fc-green-bg); color: var(--fc-green-fg); }
+  .fc-yellow { background: var(--fc-yellow-bg); color: var(--fc-yellow-fg); }
+  .fc-orange { background: var(--fc-orange-bg); color: var(--fc-orange-fg); }
+  .fc-red { background: var(--fc-red-bg); color: var(--fc-red-fg); }
 </style>
 </head>
 <body>
 <h1>Documentation Dashboard</h1>
-DASH_HEAD
+DASH_HEAD_STYLE
 
     # Subtitle with build date
     echo "<div class=\"subtitle\">Last built: $build_date</div>" >> "$DASHBOARD_HTML"
@@ -308,6 +432,7 @@ CARDS
 </div>
 FRESHNESS
 
+    emit_theme_listener_script >> "$DASHBOARD_HTML"
     echo '</body></html>' >> "$DASHBOARD_HTML"
 
     # Clean up metadata temp files
@@ -324,20 +449,62 @@ build_index() {
     find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f | sort > "$tmp"
     # Also exclude _heartbeat.js from any processing (not HTML, but good hygiene)
 
-    cat > "$index" << 'HEADER'
+    # Write index HTML header — split into parts to inject theme vars
+    cat > "$index" << 'INDEX_HEAD_TOP'
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Code Documentation</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M6 2h12l8 8v18a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z' fill='%23e2e8f0' stroke='%2394a3b8' stroke-width='1.5'/%3E%3Cpath d='M18 2v6a2 2 0 002 2h6' fill='%23cbd5e1' stroke='%2394a3b8' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cline x1='8' y1='15' x2='16' y2='15' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='8' y1='19' x2='14' y2='19' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Cline x1='8' y1='23' x2='12' y2='23' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='22' cy='22' r='5' fill='white' stroke='%232563eb' stroke-width='2'/%3E%3Cline x1='25.5' y1='25.5' x2='30' y2='30' stroke='%232563eb' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<script>
+// Set theme before first paint to prevent flash
+(function() {
+  var t = localStorage.getItem('code-docs-theme');
+  if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+})();
+</script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+INDEX_HEAD_TOP
+    emit_theme_css_vars >> "$index"
+    cat >> "$index" << 'INDEX_HEAD_STYLE'
+  :root {
+    --sidebar-bg: white;
+    --sidebar-hover: #f1f5f9;
+    --sidebar-active-bg: #eff6ff;
+    --sidebar-active-color: #2563eb;
+    --tool-bg: #eff6ff;
+    --tool-border: #bfdbfe;
+    --tool-color: #2563eb;
+    --tool-hover-bg: #dbeafe;
+    --search-bg: #f8fafc;
+    --search-focus-bg: white;
+    --count-bg: #f1f5f9;
+    --doc-item-color: #64748b;
+  }
+  [data-theme="dark"] {
+    --sidebar-bg: #1e293b;
+    --sidebar-hover: #334155;
+    --sidebar-active-bg: #1e3a5f;
+    --sidebar-active-color: #60a5fa;
+    --tool-bg: #1e293b;
+    --tool-border: #334155;
+    --tool-color: #60a5fa;
+    --tool-hover-bg: #334155;
+    --search-bg: #0f172a;
+    --search-focus-bg: #1e293b;
+    --count-bg: #334155;
+    --doc-item-color: #94a3b8;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: #f8fafc;
-    color: #334155;
+    background: var(--bg-body);
+    color: var(--text-body);
     line-height: 1.5;
     height: 100vh;
     overflow: hidden;
@@ -347,31 +514,58 @@ build_index() {
     width: 280px;
     min-width: 280px;
     height: 100vh;
-    background: white;
-    border-right: 1px solid #e2e8f0;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
   .sidebar-header {
     padding: 20px 16px 12px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
+  }
+  .sidebar-header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
   .sidebar-header h1 {
     font-size: 15px;
     font-weight: 700;
-    color: #0f172a;
+    color: var(--text-primary);
   }
   .sidebar-header .subtitle {
     font-size: 11px;
-    color: #94a3b8;
+    color: var(--text-muted);
     margin-top: 2px;
   }
+  .theme-toggle {
+    background: none;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .theme-toggle:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+  .theme-toggle svg { width: 16px; height: 16px; }
   .watcher-status {
     font-size: 11px;
-    color: #94a3b8;
+    color: var(--text-muted);
     margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .watcher-status-line {
     display: flex;
     align-items: center;
     gap: 5px;
@@ -386,25 +580,25 @@ build_index() {
   .watcher-dot.inactive { background: #ef4444; }
   .sidebar-search {
     padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
   }
   .sidebar-search input {
     width: 100%;
     padding: 6px 10px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid var(--border-color);
     border-radius: 6px;
     font-size: 12px;
     font-family: inherit;
-    color: #334155;
-    background: #f8fafc;
+    color: var(--text-body);
+    background: var(--search-bg);
     outline: none;
   }
-  .sidebar-search input:focus { border-color: #2563eb; background: white; }
-  .sidebar-search input::placeholder { color: #94a3b8; }
+  .sidebar-search input:focus { border-color: var(--sidebar-active-color); background: var(--search-focus-bg); }
+  .sidebar-search input::placeholder { color: var(--text-muted); }
   .sidebar-tools {
     padding: 8px 12px;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
     display: flex;
     gap: 8px;
@@ -416,16 +610,17 @@ build_index() {
     text-align: center;
     font-size: 11px;
     font-weight: 600;
-    color: #2563eb;
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
+    color: var(--tool-color);
+    background: var(--tool-bg);
+    border: 1px solid var(--tool-border);
     border-radius: 6px;
     cursor: pointer;
     text-decoration: none;
     transition: all 0.1s;
   }
-  .sidebar-tools a:hover { background: #dbeafe; }
+  .sidebar-tools a:hover { background: var(--tool-hover-bg); }
   .sidebar-tools a.active { background: #2563eb; color: white; border-color: #2563eb; }
+  [data-theme="dark"] .sidebar-tools a.active { background: #2563eb; color: white; border-color: #2563eb; }
   .project-list {
     flex: 1;
     overflow-y: auto;
@@ -441,15 +636,15 @@ build_index() {
     padding: 6px 16px;
     font-size: 13px;
     font-weight: 600;
-    color: #0f172a;
+    color: var(--text-primary);
     cursor: pointer;
     transition: background 0.1s;
   }
-  .project-name:hover { background: #f1f5f9; }
-  .project-name.active { background: #eff6ff; color: #2563eb; }
+  .project-name:hover { background: var(--sidebar-hover); }
+  .project-name.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-color); }
   .project-name .arrow {
     font-size: 10px;
-    color: #94a3b8;
+    color: var(--text-muted);
     transition: transform 0.15s;
     flex-shrink: 0;
     width: 12px;
@@ -459,8 +654,8 @@ build_index() {
     margin-left: auto;
     font-size: 10px;
     font-weight: 500;
-    color: #94a3b8;
-    background: #f1f5f9;
+    color: var(--text-muted);
+    background: var(--count-bg);
     padding: 1px 6px;
     border-radius: 8px;
   }
@@ -473,7 +668,7 @@ build_index() {
     display: block;
     padding: 4px 16px 4px 34px;
     font-size: 12px;
-    color: #64748b;
+    color: var(--doc-item-color);
     text-decoration: none;
     cursor: pointer;
     transition: all 0.1s;
@@ -481,8 +676,8 @@ build_index() {
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .doc-item:hover { background: #f1f5f9; color: #334155; }
-  .doc-item.active { background: #eff6ff; color: #2563eb; font-weight: 500; }
+  .doc-item:hover { background: var(--sidebar-hover); color: var(--text-body); }
+  .doc-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-color); font-weight: 500; }
   .content {
     flex: 1;
     height: 100vh;
@@ -495,7 +690,7 @@ build_index() {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #94a3b8;
+    color: var(--text-muted);
     font-size: 14px;
   }
   .content iframe {
@@ -511,7 +706,13 @@ build_index() {
 <body>
 <nav class="sidebar">
   <div class="sidebar-header">
-    <h1>Code Docs</h1>
+    <div class="sidebar-header-top">
+      <h1>Code Docs</h1>
+      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
+        <svg id="iconSun" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m8.66-13.66l-.71.71M4.05 19.95l-.71.71M21 12h-1M4 12H3m16.66 7.66l-.71-.71M4.05 4.05l-.71-.71M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+        <svg id="iconMoon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="display:none"><path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0112.478 3.21a9.72 9.72 0 109.274 11.792z"/></svg>
+      </button>
+    </div>
     <div class="subtitle">PROJECTCOUNT projects</div>
     <div class="watcher-status" id="watcherStatus"></div>
   </div>
@@ -523,7 +724,7 @@ build_index() {
     <a id="toolBuildSystem" onclick="loadTool(this, '_build-system.html')">Build System</a>
   </div>
   <div class="project-list" id="projectList">
-HEADER
+INDEX_HEAD_STYLE
 
     local current_project=""
     local project_count=0
@@ -562,47 +763,79 @@ HEADER
 </nav>
 <main class="content">
   <div class="content-placeholder" id="placeholder" style="display:none">Select a document from the sidebar</div>
-  <iframe id="docFrame" src="dashboard.html" class="visible"></iframe>
+  <iframe id="docFrame" src="about:blank" class="visible"></iframe>
 </main>
 <script>
+// --- Theme toggle ---
+function updateThemeIcon() {
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.getElementById('iconSun').style.display = isDark ? 'none' : 'block';
+  document.getElementById('iconMoon').style.display = isDark ? 'block' : 'none';
+}
+function sendThemeToIframe(theme) {
+  var frame = document.getElementById('docFrame');
+  if (frame && frame.contentWindow) {
+    frame.contentWindow.postMessage({ type: 'theme-change', theme: theme }, '*');
+  }
+}
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'light';
+  var next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('code-docs-theme', next);
+  updateThemeIcon();
+  sendThemeToIframe(next);
+}
+// Init icon state on load
+updateThemeIcon();
+// When iframe loads a new page, propagate current theme
+document.getElementById('docFrame').addEventListener('load', function() {
+  var theme = document.documentElement.getAttribute('data-theme') || 'light';
+  sendThemeToIframe(theme);
+});
+
+// --- Navigation ---
 function toggleProject(el) {
-  const docList = el.nextElementSibling;
-  const wasOpen = el.classList.contains('open');
+  var docList = el.nextElementSibling;
   el.classList.toggle('open');
   docList.classList.toggle('open');
 }
 function loadTool(el, path) {
-  document.querySelectorAll('.sidebar-tools a.active').forEach(a => a.classList.remove('active'));
-  document.querySelectorAll('.doc-item.active').forEach(d => d.classList.remove('active'));
+  document.querySelectorAll('.sidebar-tools a.active').forEach(function(a) { a.classList.remove('active'); });
+  document.querySelectorAll('.doc-item.active').forEach(function(d) { d.classList.remove('active'); });
   if (el) el.classList.add('active');
-  const frame = document.getElementById('docFrame');
-  const placeholder = document.getElementById('placeholder');
-  frame.src = path;
+  var frame = document.getElementById('docFrame');
+  var placeholder = document.getElementById('placeholder');
+  frame.src = path + '?t=' + Date.now();
   frame.classList.add('visible');
   placeholder.style.display = 'none';
+  window.__currentDocPath = path;
 }
 function loadDoc(el, path) {
-  document.querySelectorAll('.doc-item.active').forEach(d => d.classList.remove('active'));
-  document.querySelectorAll('.sidebar-tools a.active').forEach(a => a.classList.remove('active'));
+  document.querySelectorAll('.doc-item.active').forEach(function(d) { d.classList.remove('active'); });
+  document.querySelectorAll('.sidebar-tools a.active').forEach(function(a) { a.classList.remove('active'); });
   if (el) el.classList.add('active');
-  const frame = document.getElementById('docFrame');
-  const placeholder = document.getElementById('placeholder');
-  frame.src = path;
+  var frame = document.getElementById('docFrame');
+  var placeholder = document.getElementById('placeholder');
+  frame.src = path + '?t=' + Date.now();
   frame.classList.add('visible');
   placeholder.style.display = 'none';
+  window.__currentDocPath = path;
 }
 document.getElementById('search').addEventListener('input', function() {
-  const q = this.value.toLowerCase();
-  document.querySelectorAll('.project').forEach(p => {
-    const name = p.dataset.name.toLowerCase();
-    const docs = p.querySelectorAll('.doc-item');
-    let hasMatch = name.includes(q);
-    docs.forEach(d => {
-      if (d.textContent.toLowerCase().includes(q)) hasMatch = true;
+  var q = this.value.toLowerCase();
+  document.querySelectorAll('.project').forEach(function(p) {
+    var name = p.dataset.name.toLowerCase();
+    var docs = p.querySelectorAll('.doc-item');
+    var hasMatch = name.indexOf(q) !== -1;
+    docs.forEach(function(d) {
+      if (d.textContent.toLowerCase().indexOf(q) !== -1) hasMatch = true;
     });
     p.classList.toggle('hidden', !hasMatch);
   });
 });
+
+// --- Heartbeat & last rebuild ---
 function timeAgo(seconds) {
   if (seconds < 60) return 'just now';
   var m = Math.floor(seconds / 60);
@@ -617,30 +850,84 @@ function timeAgo(seconds) {
   var d = Math.floor(h / 24);
   return d + (d === 1 ? ' day ago' : ' days ago');
 }
-function checkHeartbeat() {
+function checkStatus() {
   var el = document.getElementById('watcherStatus');
+  // Load heartbeat
   delete window.__watcherHeartbeat;
+  var s1 = document.createElement('script');
+  s1.src = '_heartbeat.js?_=' + Date.now();
+  s1.onload = function() {
+    s1.remove();
+    var hbTs = window.__watcherHeartbeat;
+    var watcherActive = hbTs && (Math.floor(Date.now() / 1000) - hbTs) < 120;
+    // Load last build timestamp
+    delete window.__lastBuildTs;
+    var s2 = document.createElement('script');
+    s2.src = '_lastbuild.js?_=' + Date.now();
+    s2.onload = function() {
+      s2.remove();
+      var buildTs = window.__lastBuildTs;
+      renderStatus(el, watcherActive, buildTs);
+    };
+    s2.onerror = function() {
+      s2.remove();
+      renderStatus(el, watcherActive, null);
+    };
+    document.head.appendChild(s2);
+  };
+  s1.onerror = function() {
+    s1.remove();
+    renderStatus(el, false, null);
+  };
+  document.head.appendChild(s1);
+}
+function renderStatus(el, watcherActive, buildTs) {
+  var lines = '';
+  if (watcherActive) {
+    lines += '<div class="watcher-status-line"><span class="watcher-dot active"></span>Watcher active</div>';
+  } else {
+    lines += '<div class="watcher-status-line"><span class="watcher-dot inactive"></span>Watcher inactive</div>';
+  }
+  if (buildTs) {
+    var buildAge = Math.floor(Date.now() / 1000) - buildTs;
+    lines += '<div class="watcher-status-line">Last rebuild: ' + timeAgo(buildAge) + '</div>';
+  }
+  el.innerHTML = lines;
+}
+checkStatus();
+setInterval(checkStatus, 10000);
+
+// --- Auto-reload on build changes ---
+var __lastKnownBuildTs = null;
+function checkForReload() {
+  delete window.__lastBuildTs;
   var s = document.createElement('script');
-  s.src = '_heartbeat.js?_=' + Date.now();
+  s.src = '_lastbuild.js?_=' + Date.now();
   s.onload = function() {
     s.remove();
-    var ts = window.__watcherHeartbeat;
-    if (!ts) { showInactive(el); return; }
-    var age = Math.floor(Date.now() / 1000) - ts;
-    if (age < 120) {
-      el.innerHTML = '<span class="watcher-dot active"></span>Watcher active &middot; last rebuild ' + timeAgo(age);
-    } else {
-      showInactive(el);
+    var ts = window.__lastBuildTs;
+    if (!ts) return;
+    if (__lastKnownBuildTs === null) {
+      // First poll — just record, don't reload
+      __lastKnownBuildTs = ts;
+      return;
+    }
+    if (ts !== __lastKnownBuildTs) {
+      __lastKnownBuildTs = ts;
+      // Reload current iframe content with cache buster
+      var frame = document.getElementById('docFrame');
+      var currentPath = window.__currentDocPath || 'dashboard.html';
+      frame.src = currentPath + '?t=' + Date.now();
     }
   };
-  s.onerror = function() { s.remove(); showInactive(el); };
+  s.onerror = function() { s.remove(); };
   document.head.appendChild(s);
 }
-function showInactive(el) {
-  el.innerHTML = '<span class="watcher-dot inactive"></span>Watcher inactive';
-}
-checkHeartbeat();
-setInterval(checkHeartbeat, 10000);
+setInterval(checkForReload, 5000);
+
+// --- Initial dashboard load with cache buster ---
+window.__currentDocPath = 'dashboard.html';
+document.getElementById('docFrame').src = 'dashboard.html?t=' + Date.now();
 </script>
 </body>
 </html>
@@ -657,7 +944,10 @@ FOOTER
 
 write_heartbeat() {
     mkdir -p "$OUTPUT_DIR"
-    echo "window.__watcherHeartbeat = $(date +%s);" > "$OUTPUT_DIR/_heartbeat.js"
+    local ts
+    ts=$(date +%s)
+    echo "window.__watcherHeartbeat = $ts;" > "$OUTPUT_DIR/_heartbeat.js"
+    echo "window.__lastBuildTs = $ts;" > "$OUTPUT_DIR/_lastbuild.js"
 }
 
 # --- Main ---
@@ -682,6 +972,7 @@ elif [[ "${1:-}" == "--file" && -n "${2:-}" ]]; then
     # Only build if it's a .md file under CODE_DIR
     if [[ "$md_file" == "$CODE_DIR"/* && "$md_file" == *.md ]]; then
         build_file "$md_file"
+        cleanup_orphans
         build_system_docs
         collect_metadata
         build_dashboard
@@ -694,6 +985,7 @@ else
     find_md_files | while IFS= read -r f; do
         build_file "$f"
     done
+    cleanup_orphans
     build_system_docs
     collect_metadata
     build_dashboard
