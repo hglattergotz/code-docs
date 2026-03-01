@@ -13,12 +13,24 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # Load configuration
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     source "$SCRIPT_DIR/.env"
-else
-    echo "Error: $SCRIPT_DIR/.env not found. Copy .env.example to .env and configure." >&2
+fi
+if [[ -z "${CODE_DIR:-}" || -z "${OUTPUT_DIR:-}" ]]; then
+    echo "Error: CODE_DIR and OUTPUT_DIR must be set (via .env or environment variables)" >&2
     exit 1
 fi
 
 export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$PATH"
+
+# Cross-platform helpers
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    _get_mtime()    { stat -f "%m" "$1" 2>/dev/null || echo 0; }
+    _format_date()  { date -r "$1" "+%Y-%m-%d" 2>/dev/null || echo "unknown"; }
+    _sed_inplace()  { sed -i '' "$@"; }
+else
+    _get_mtime()    { stat -c "%Y" "$1" 2>/dev/null || echo 0; }
+    _format_date()  { date -d "@$1" "+%Y-%m-%d" 2>/dev/null || echo "unknown"; }
+    _sed_inplace()  { sed -i "$@"; }
+fi
 _STYLE_SRC="$SCRIPT_DIR/style.html"
 # Copy style to /tmp to avoid macOS Full Disk Access restrictions when
 # pandoc is invoked by launchd (which lacks FDA for ~/Documents/).
@@ -239,7 +251,7 @@ collect_metadata() {
         local words=0
 
         if [[ -f "$md_file" ]]; then
-            mtime=$(stat -f "%m" "$md_file" 2>/dev/null || echo 0)
+            mtime=$(_get_mtime "$md_file")
             words=$(wc -w < "$md_file" 2>/dev/null | tr -d ' ')
         fi
 
@@ -391,7 +403,7 @@ CARDS
         local name="${rel#"$project"/}"
         local html_rel="$rel"
         local mod_date
-        mod_date=$(date -r "$mtime" "+%Y-%m-%d" 2>/dev/null || echo "unknown")
+        mod_date=$(_format_date "$mtime")
         local age_days=$(( (now - mtime) / 86400 ))
         local age_str
         if [[ $age_days -eq 0 ]]; then
@@ -420,7 +432,7 @@ CARDS
 
     while IFS=$'\t' read -r project doc_count proj_words last_mtime; do
         local mod_date
-        mod_date=$(date -r "$last_mtime" "+%Y-%m-%d" 2>/dev/null || echo "unknown")
+        mod_date=$(_format_date "$last_mtime")
         local age_days=$(( (now - last_mtime) / 86400 ))
         local badge_class="badge-green" badge_label="Fresh"
         if [[ $age_days -ge 365 ]]; then
@@ -1166,7 +1178,7 @@ FOOTER
 
     # Replace the project count placeholder
     if command -v sed &>/dev/null; then
-        sed -i '' "s/PROJECTCOUNT/$project_count/" "$index"
+        _sed_inplace "s/PROJECTCOUNT/$project_count/" "$index"
     fi
 
     rm -f "$tmp"

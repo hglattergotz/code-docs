@@ -1,0 +1,14 @@
+services:
+  code-docs:
+    build: .
+    volumes:
+      - /Users/henninggl/Documents/projects:/code:ro
+      - /Users/henninggl/Documents/code-html:/output
+    ports:
+      - "8000:8000"
+    environment:
+      - CODE_DIR=/code
+      - OUTPUT_DIR=/output
+      - SIDEBAR_STYLE=tree
+      - EXCLUDE_PROJECTS=rt_docs content_bak content_bak1 hugo-sites content
+    restart: unless-stopped

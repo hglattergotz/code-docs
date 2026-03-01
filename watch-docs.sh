@@ -12,8 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 # Load configuration
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     source "$SCRIPT_DIR/.env"
-else
-    echo "Error: $SCRIPT_DIR/.env not found. Copy .env.example to .env and configure." >&2
+fi
+if [[ -z "${CODE_DIR:-}" || -z "${OUTPUT_DIR:-}" ]]; then
+    echo "Error: CODE_DIR and OUTPUT_DIR must be set (via .env or environment variables)" >&2
     exit 1
 fi
 
@@ -55,22 +56,15 @@ HEARTBEAT_PID=$!
 echo ""
 echo "Watching for changes in $CODE_DIR ..."
 
-# Build fswatch exclude args for excluded projects
-exclude_args=()
-if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
-    for project in $EXCLUDE_PROJECTS; do
-        exclude_args+=(--exclude "$CODE_DIR/$project")
-    done
-fi
+handle_change() {
+    local changed_file="$1"
 
-fswatch \
-    --event Created --event Updated --event Renamed --event Removed \
-    --latency 2 \
-    --exclude="node_modules" --exclude="\\.git" --exclude="vendor" \
-    --exclude="__pycache__" --exclude="\\.venv" --exclude="\\.next" \
-    --exclude="dist" --exclude="\\.cache" --exclude="\\.terraform" \
-    "${exclude_args[@]}" \
-    "$CODE_DIR" | while IFS= read -r changed_file; do
+    # Skip excluded projects
+    if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+        for project in $EXCLUDE_PROJECTS; do
+            [[ "$changed_file" == "$CODE_DIR/$project/"* ]] && return
+        done
+    fi
 
     # Three-way classification
     if [[ "$changed_file" == *.md ]]; then
@@ -95,4 +89,39 @@ fswatch \
         fi
     fi
     # Otherwise (non-.md files like .js, .py, etc.) — ignore silently
-done
+}
+
+if command -v fswatch >/dev/null 2>&1; then
+    # macOS / fswatch
+    exclude_args=()
+    if [[ -n "${EXCLUDE_PROJECTS:-}" ]]; then
+        for project in $EXCLUDE_PROJECTS; do
+            exclude_args+=(--exclude "$CODE_DIR/$project")
+        done
+    fi
+    fswatch \
+        --event Created --event Updated --event Renamed --event Removed \
+        --latency 2 \
+        --exclude="node_modules" --exclude="\\.git" --exclude="vendor" \
+        --exclude="__pycache__" --exclude="\\.venv" --exclude="\\.next" \
+        --exclude="dist" --exclude="\\.cache" --exclude="\\.terraform" \
+        "${exclude_args[@]}" \
+        "$CODE_DIR" | while IFS= read -r changed_file; do
+        handle_change "$changed_file"
+    done
+
+elif command -v inotifywait >/dev/null 2>&1; then
+    # Linux / inotify-tools (Docker)
+    inotifywait -m -r -q \
+        -e modify,create,delete,moved_to,moved_from \
+        --format '%w%f' \
+        "$CODE_DIR" \
+        | grep -Ev '/(node_modules|\.git|vendor|__pycache__|\.venv|\.next|dist|\.cache|\.terraform)/' \
+        | while IFS= read -r changed_file; do
+        handle_change "$changed_file"
+    done
+
+else
+    echo "Error: Neither fswatch nor inotifywait is installed." >&2
+    exit 1
+fi
