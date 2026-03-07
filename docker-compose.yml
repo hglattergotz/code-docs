@@ -2,13 +2,13 @@ services:
   code-docs:
     build: .
     volumes:
-      - /Users/henninggl/Documents/projects:/code:ro
-      - /Users/henninggl/Documents/code-html:/output
+      - ${HOST_CODE_DIR}:/code:ro
+      - ${HOST_OUTPUT_DIR}:/output
     ports:
       - "8000:8000"
     environment:
       - CODE_DIR=/code
       - OUTPUT_DIR=/output
-      - SIDEBAR_STYLE=tree
-      - EXCLUDE_PROJECTS=rt_docs content_bak content_bak1 hugo-sites content
+      - SIDEBAR_STYLE=${SIDEBAR_STYLE:-tree}
+      - EXCLUDE_PROJECTS=${EXCLUDE_PROJECTS:-}
     restart: unless-stopped

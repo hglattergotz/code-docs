@@ -243,7 +243,7 @@ collect_metadata() {
     local file_list="$meta_dir/files.tsv"
     : > "$file_list"
 
-    find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f | sort | while IFS= read -r html_file; do
+    find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f | sort -f | while IFS= read -r html_file; do
         local rel="${html_file#"$OUTPUT_DIR"/}"
         local project="${rel%%/*}"
         local md_file="$CODE_DIR/${rel%.html}.md"
@@ -619,7 +619,7 @@ build_index() {
     tmp=$(mktemp)
 
     # Collect all html files grouped by project (exclude generated files)
-    find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f | sort > "$tmp"
+    find "$OUTPUT_DIR" -name "*.html" ! -name "index.html" ! -name "dashboard.html" ! -name "_build-system.html" -type f | sort -f > "$tmp"
     # Also exclude _heartbeat.js from any processing (not HTML, but good hygiene)
 
     # Write index HTML header — split into parts to inject theme vars
@@ -909,6 +909,32 @@ INDEX_HEAD_TOP
   }
   .folder-list.open { display: block; }
   .folder.hidden { display: none; }
+  .rebuild-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .rebuild-btn {
+    flex: 1;
+    padding: 5px 0;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--tool-color);
+    background: var(--tool-bg);
+    border: 1px solid var(--tool-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.1s;
+  }
+  .rebuild-btn:hover:not(:disabled) { background: var(--tool-hover-bg); }
+  .rebuild-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .rebuild-btn-full {
+    color: var(--text-muted);
+    background: none;
+    border-color: var(--border-color);
+  }
+  .rebuild-btn-full:hover:not(:disabled) { background: var(--sidebar-hover); color: var(--text-body); }
 </style>
 </head>
 <body>
@@ -923,6 +949,10 @@ INDEX_HEAD_TOP
     </div>
     <div class="subtitle">PROJECTCOUNT projects</div>
     <div class="watcher-status" id="watcherStatus"></div>
+    <div class="rebuild-row">
+      <button id="updateBtn" class="rebuild-btn" onclick="triggerUpdate()">Update</button>
+      <button id="rebuildBtn" class="rebuild-btn rebuild-btn-full" onclick="triggerRebuild()">Full Rebuild</button>
+    </div>
   </div>
   <div class="sidebar-search">
     <input type="text" id="search" placeholder="Filter projects..." autocomplete="off">
@@ -951,6 +981,27 @@ INDEX_HEAD_STYLE
   <iframe id="docFrame" src="about:blank" class="visible"></iframe>
 </main>
 <script>
+// --- Rebuild / Update ---
+function triggerUpdate() {
+  var btn = document.getElementById('updateBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  fetch('/update', { method: 'POST' })
+    .catch(function() {
+      btn.disabled = false;
+      btn.textContent = 'Update';
+    });
+}
+function triggerRebuild() {
+  var btn = document.getElementById('rebuildBtn');
+  btn.disabled = true;
+  btn.textContent = 'Rebuilding...';
+  fetch('/rebuild', { method: 'POST' })
+    .catch(function() {
+      btn.disabled = false;
+      btn.textContent = 'Full Rebuild';
+    });
+}
 // --- Theme toggle ---
 function updateThemeIcon() {
   var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -1103,39 +1154,46 @@ function checkStatus() {
   s1.src = '_heartbeat.js?_=' + Date.now();
   s1.onload = function() {
     s1.remove();
-    var hbTs = window.__watcherHeartbeat;
-    var watcherActive = hbTs && (Math.floor(Date.now() / 1000) - hbTs) < 120;
-    // Load last build timestamp
+    var hbTs = window.__watcherHeartbeat || null;
     delete window.__lastBuildTs;
     var s2 = document.createElement('script');
     s2.src = '_lastbuild.js?_=' + Date.now();
     s2.onload = function() {
       s2.remove();
-      var buildTs = window.__lastBuildTs;
-      renderStatus(el, watcherActive, buildTs);
+      renderStatus(el, hbTs, window.__lastBuildTs || null);
     };
     s2.onerror = function() {
       s2.remove();
-      renderStatus(el, watcherActive, null);
+      renderStatus(el, hbTs, null);
     };
     document.head.appendChild(s2);
   };
   s1.onerror = function() {
     s1.remove();
-    renderStatus(el, false, null);
+    renderStatus(el, null, null);
   };
   document.head.appendChild(s1);
 }
-function renderStatus(el, watcherActive, buildTs) {
+var __lastKnownHeartbeat = null;
+function renderStatus(el, hbTs, buildTs) {
+  var now = Math.floor(Date.now() / 1000);
+  // Reset Update button when a poll cycle completes
+  if (hbTs !== __lastKnownHeartbeat) {
+    if (__lastKnownHeartbeat !== null) {
+      var ubtn = document.getElementById('updateBtn');
+      if (ubtn && ubtn.disabled) { ubtn.disabled = false; ubtn.textContent = 'Update'; }
+    }
+    __lastKnownHeartbeat = hbTs;
+  }
   var lines = '';
-  if (watcherActive) {
-    lines += '<div class="watcher-status-line"><span class="watcher-dot active"></span>Watcher active</div>';
+  if (hbTs) {
+    var dotClass = (now - hbTs) < 60 ? 'active' : 'inactive';
+    lines += '<div class="watcher-status-line"><span class="watcher-dot ' + dotClass + '"></span>Last checked: ' + timeAgo(now - hbTs) + '</div>';
   } else {
-    lines += '<div class="watcher-status-line"><span class="watcher-dot inactive"></span>Watcher inactive</div>';
+    lines += '<div class="watcher-status-line"><span class="watcher-dot inactive"></span>Poller inactive</div>';
   }
   if (buildTs) {
-    var buildAge = Math.floor(Date.now() / 1000) - buildTs;
-    lines += '<div class="watcher-status-line">Last rebuild: ' + timeAgo(buildAge) + '</div>';
+    lines += '<div class="watcher-status-line">Last rebuilt: ' + timeAgo(now - buildTs) + '</div>';
   }
   el.innerHTML = lines;
 }
@@ -1159,6 +1217,11 @@ function checkForReload() {
     }
     if (ts !== __lastKnownBuildTs) {
       __lastKnownBuildTs = ts;
+      // Reset buttons if a rebuild was in progress
+      var rbtn = document.getElementById('rebuildBtn');
+      if (rbtn && rbtn.disabled) { rbtn.disabled = false; rbtn.textContent = 'Full Rebuild'; }
+      var ubtn = document.getElementById('updateBtn');
+      if (ubtn && ubtn.disabled) { ubtn.disabled = false; ubtn.textContent = 'Update'; }
       // Reload current iframe content with cache buster
       var frame = document.getElementById('docFrame');
       var currentPath = window.__currentDocPath || 'dashboard.html';
@@ -1185,12 +1248,18 @@ FOOTER
     echo "  Built: index.html"
 }
 
-write_heartbeat() {
+write_poll_ts() {
     mkdir -p "$OUTPUT_DIR"
-    local ts
-    ts=$(date +%s)
-    echo "window.__watcherHeartbeat = $ts;" > "$OUTPUT_DIR/_heartbeat.js"
-    echo "window.__lastBuildTs = $ts;" > "$OUTPUT_DIR/_lastbuild.js"
+    echo "window.__watcherHeartbeat = $(date +%s);" > "$OUTPUT_DIR/_heartbeat.js"
+}
+
+write_build_ts() {
+    echo "window.__lastBuildTs = $(date +%s);" > "$OUTPUT_DIR/_lastbuild.js"
+}
+
+write_heartbeat() {
+    write_poll_ts
+    write_build_ts
 }
 
 # --- Main ---
@@ -1201,6 +1270,7 @@ Usage: build-docs.sh [option]
 
 Options:
   (none)           Full rebuild of all docs + index
+  --update         Incremental rebuild: diff against saved state, rebuild only changes
   --file <path>    Rebuild a single .md file + index
   --clean          Remove all output and do a full rebuild
   --help, -h       Show this help message
@@ -1231,6 +1301,9 @@ elif [[ "${1:-}" == "--clean" ]]; then
     build_dashboard
     build_index
     write_heartbeat
+    find_md_files | while IFS= read -r f; do
+        printf '%s\t%s\n' "$f" "$(_get_mtime "$f")"
+    done | sort > "$OUTPUT_DIR/_state.tsv"
     echo "Done."
 
 elif [[ "${1:-}" == "--file" && -n "${2:-}" ]]; then
@@ -1255,6 +1328,83 @@ elif [[ "${1:-}" == "--file" && -n "${2:-}" ]]; then
         write_heartbeat
     fi
 
+elif [[ "${1:-}" == "--update" ]]; then
+    # Incremental update: diff current .md files against saved state,
+    # rebuild only new/modified files, remove HTML for deleted files.
+    STATE_FILE="$OUTPUT_DIR/_state.tsv"
+
+    # Collect current state: sorted "path TAB mtime" for all .md files
+    tmp_current=$(mktemp)
+    find_md_files | while IFS= read -r f; do
+        printf '%s\t%s\n' "$f" "$(_get_mtime "$f")"
+    done | sort > "$tmp_current"
+
+    # No previous state → run a full build and save state
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "No previous state — running full build..."
+        find_md_files | while IFS= read -r f; do
+            build_file "$f"
+        done
+        cleanup_orphans
+        cleanup_excluded_projects
+        build_system_docs
+        collect_metadata
+        build_dashboard
+        build_index
+        write_heartbeat
+        mv "$tmp_current" "$STATE_FILE"
+        echo "Done."
+        exit 0
+    fi
+
+    changed=0
+
+    # New files: paths in current but not in previous
+    while IFS=$'\t' read -r path _mtime; do
+        [[ -z "$path" ]] && continue
+        echo "  New: ${path#"$CODE_DIR"/}"
+        build_file "$path"
+        changed=1
+    done < <(join -t$'\t' -v1 "$tmp_current" "$STATE_FILE" 2>/dev/null || true)
+
+    # Modified files: paths in both, but mtime differs
+    while IFS=$'\t' read -r path curr_mtime prev_mtime; do
+        [[ -z "$path" ]] && continue
+        if [[ "$curr_mtime" != "$prev_mtime" ]]; then
+            echo "  Modified: ${path#"$CODE_DIR"/}"
+            build_file "$path"
+            changed=1
+        fi
+    done < <(join -t$'\t' "$tmp_current" "$STATE_FILE" 2>/dev/null || true)
+
+    # Deleted files: paths in previous but not in current
+    while IFS=$'\t' read -r path _mtime; do
+        [[ -z "$path" ]] && continue
+        rel="${path#"$CODE_DIR"/}"
+        html="$OUTPUT_DIR/${rel%.md}.html"
+        if [[ -f "$html" ]]; then
+            rm -f "$html"
+            echo "  Deleted: $rel"
+            changed=1
+        fi
+    done < <(join -t$'\t' -v2 "$tmp_current" "$STATE_FILE" 2>/dev/null || true)
+
+    if [[ $changed -eq 1 ]]; then
+        cleanup_orphans
+        cleanup_excluded_projects
+        build_system_docs
+        collect_metadata
+        build_dashboard
+        build_index
+        write_heartbeat
+        mv "$tmp_current" "$STATE_FILE"
+        echo "Done (incremental)."
+    else
+        rm -f "$tmp_current"
+        write_poll_ts
+        echo "No changes."
+    fi
+
 else
     echo "Building all docs..."
     find_md_files | while IFS= read -r f; do
@@ -1267,5 +1417,9 @@ else
     build_dashboard
     build_index
     write_heartbeat
+    # Save state so the next --update cycle can be incremental
+    find_md_files | while IFS= read -r f; do
+        printf '%s\t%s\n' "$f" "$(_get_mtime "$f")"
+    done | sort > "$OUTPUT_DIR/_state.tsv"
     echo "Done."
 fi
