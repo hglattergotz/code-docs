@@ -7,14 +7,14 @@ It recursively scans the directory for `.md` files, converts them to styled HTML
 ## Quick Start
 
 ```bash
-# Install dependencies
-brew install pandoc fswatch tmux
+# Install Docker Desktop (only prerequisite)
+# https://www.docker.com/products/docker-desktop
 
 # Run the interactive setup wizard (creates .env)
 ./code-docs.sh setup
 
-# Start the file watcher + local web server
-./code-docs.sh up --serve
+# Start the Docker container (builds docs, starts watcher + web server)
+./code-docs.sh up
 ```
 
 Open [http://localhost:8000](http://localhost:8000) to browse your docs.
@@ -22,11 +22,11 @@ Open [http://localhost:8000](http://localhost:8000) to browse your docs.
 ## Key Commands
 
 ```bash
-./code-docs.sh up --serve    # Start watcher + web server
+./code-docs.sh up            # Start container (watcher + web server)
+./code-docs.sh up --clean    # Clean output, then start fresh
 ./code-docs.sh down          # Stop everything
-./code-docs.sh status        # Check watcher state
-./build-docs.sh --clean      # Full rebuild from scratch
-./build-docs.sh --help       # Show build options
+./code-docs.sh status        # Check container state
+./code-docs.sh logs          # Follow live logs
 ```
 
 ## Configuration

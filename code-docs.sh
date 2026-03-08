@@ -2,69 +2,57 @@
 # code-docs.sh - Entry-point for the code-docs build system
 #
 # Usage:
-#   ./code-docs.sh setup                Interactive .env wizard
-#   ./code-docs.sh up                   Start watcher (auto-setup if no .env)
-#   ./code-docs.sh up --build           Full build before starting watcher
-#   ./code-docs.sh up --clean           Clean build before starting watcher
-#   ./code-docs.sh up --serve           Start watcher + HTTP server on localhost:8000
-#   ./code-docs.sh up --serve --build   Build, then start watcher + server
-#   ./code-docs.sh down                 Stop watcher (and server if running)
-#   ./code-docs.sh status               Show watcher state
-#   ./code-docs.sh help                 Usage info
+#   ./code-docs.sh setup          Interactive .env wizard
+#   ./code-docs.sh up             Start Docker container (auto-setup if no .env)
+#   ./code-docs.sh up --clean     Clean output files, then start Docker container
+#   ./code-docs.sh down           Stop Docker container
+#   ./code-docs.sh status         Show container state and configuration
+#   ./code-docs.sh logs           Follow container logs (Ctrl+C to stop)
+#   ./code-docs.sh help           Usage info
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-SESSION_NAME="code-docs"
 
 # --- Helper functions ---
 
 load_env() {
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        # shellcheck disable=SC1090
         source "$SCRIPT_DIR/.env"
-        export PATH="${EXTRA_PATH:+$EXTRA_PATH:}$PATH"
+        # Export vars so docker compose picks them up for interpolation in docker-compose.yml.
+        # Shell env vars take precedence over the .env file that docker compose also reads,
+        # ensuring $HOME and other shell expansions are resolved correctly.
+        export CODE_DIR="${CODE_DIR:-}"
+        export OUTPUT_DIR="${OUTPUT_DIR:-}"
+        export EXCLUDE_PROJECTS="${EXCLUDE_PROJECTS:-}"
+        export SIDEBAR_STYLE="${SIDEBAR_STYLE:-tree}"
+        export HTTP_PORT="${HTTP_PORT:-8000}"
         return 0
     fi
     return 1
 }
 
 check_deps() {
-    local missing=()
-    local serve_mode=false
-
-    # Check if --serve flag is present in arguments
-    for arg in "$@"; do
-        [[ "$arg" == "--serve" ]] && serve_mode=true
-    done
-
-    # Required deps for watcher
-    for cmd in pandoc fswatch tmux; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
-        fi
-    done
-
-    # Python required only for --serve
-    if [[ "$serve_mode" == true ]] && ! command -v python3 &>/dev/null; then
-        missing+=("python3")
+    if ! command -v docker &>/dev/null; then
+        echo "Error: docker is not installed or not in PATH."
+        echo "Install Docker Desktop: https://www.docker.com/products/docker-desktop"
+        return 1
     fi
-
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "Missing dependencies: ${missing[*]}"
-        echo ""
-        if command -v brew &>/dev/null; then
-            echo "  Install with: brew install ${missing[*]}"
-        else
-            echo "  Homebrew not found. Install Homebrew first (https://brew.sh),"
-            echo "  then run: brew install ${missing[*]}"
-        fi
+    if ! docker compose version &>/dev/null 2>&1; then
+        echo "Error: 'docker compose' plugin not found."
+        echo "Install Docker Desktop: https://www.docker.com/products/docker-desktop"
         return 1
     fi
     return 0
 }
 
-session_exists() {
-    tmux has-session -t "$SESSION_NAME" 2>/dev/null
+run_compose() {
+    (cd "$SCRIPT_DIR" && docker compose "$@")
+}
+
+container_running() {
+    run_compose ps --quiet --status running 2>/dev/null | grep -q .
 }
 
 # --- Subcommand functions ---
@@ -77,7 +65,6 @@ cmd_setup() {
         echo "Current .env configuration:"
         echo ""
         while IFS= read -r line; do
-            # Show non-comment, non-empty lines
             if [[ -n "$line" && "$line" != \#* ]]; then
                 echo "  $line"
             fi
@@ -91,34 +78,9 @@ cmd_setup() {
         echo ""
     fi
 
-    # --- EXTRA_PATH ---
-    local suggested_path=""
-    local platform_hint=""
-    if [[ -d "/opt/homebrew/bin" ]]; then
-        suggested_path="/opt/homebrew/bin"
-        platform_hint="Apple Silicon Mac detected"
-    elif [[ -x "/usr/local/bin/brew" ]]; then
-        suggested_path="/usr/local/bin"
-        platform_hint="Intel Mac detected"
-    else
-        suggested_path=""
-        platform_hint="No Homebrew detected (Linux/other)"
-    fi
-
-    echo "1) EXTRA_PATH — Additional PATH for tools (pandoc, fswatch)"
-    if [[ -n "$suggested_path" ]]; then
-        echo "   $platform_hint → suggesting: $suggested_path"
-    else
-        echo "   $platform_hint → suggesting: (empty)"
-    fi
-    read -rp "   EXTRA_PATH [$suggested_path]: " input_path
-    local extra_path="${input_path:-$suggested_path}"
-
-    echo ""
-
     # --- CODE_DIR ---
     local default_code="$HOME/Documents/code"
-    echo "2) CODE_DIR — Directory containing source code projects"
+    echo "1) CODE_DIR — Directory containing source code projects"
     read -rp "   CODE_DIR [$default_code]: " input_code
     local code_dir="${input_code:-$default_code}"
 
@@ -130,7 +92,7 @@ cmd_setup() {
 
     # --- OUTPUT_DIR ---
     local default_output="$HOME/Documents/code-html"
-    echo "3) OUTPUT_DIR — Directory for generated HTML output"
+    echo "2) OUTPUT_DIR — Directory for generated HTML output"
     read -rp "   OUTPUT_DIR [$default_output]: " input_output
     local output_dir="${input_output:-$default_output}"
 
@@ -141,6 +103,27 @@ cmd_setup() {
             echo "   Created $output_dir"
         fi
     fi
+
+    echo ""
+
+    # --- EXCLUDE_PROJECTS ---
+    echo "3) EXCLUDE_PROJECTS — Projects to exclude (space-separated names, or leave empty)"
+    read -rp "   EXCLUDE_PROJECTS []: " input_exclude
+    local exclude_projects="${input_exclude:-}"
+
+    echo ""
+
+    # --- SIDEBAR_STYLE ---
+    echo "4) SIDEBAR_STYLE — Sidebar layout: 'tree' (nested folders) or 'flat' (file paths)"
+    read -rp "   SIDEBAR_STYLE [tree]: " input_sidebar
+    local sidebar_style="${input_sidebar:-tree}"
+
+    echo ""
+
+    # --- HTTP_PORT ---
+    echo "5) HTTP_PORT — Port for the web server"
+    read -rp "   HTTP_PORT [8000]: " input_port
+    local http_port="${input_port:-8000}"
 
     echo ""
 
@@ -155,32 +138,29 @@ CODE_DIR="$code_dir"
 # Directory where generated HTML docs will be written
 OUTPUT_DIR="$output_dir"
 
-# Additional PATH entries (e.g. Homebrew bin directory)
-# Apple Silicon: /opt/homebrew/bin
-# Intel Mac:     /usr/local/bin
-# Linux:         (leave empty or omit)
-EXTRA_PATH="$extra_path"
+# Projects to exclude from documentation (space-separated directory names)
+EXCLUDE_PROJECTS="$exclude_projects"
+
+# Sidebar display style: "tree" (nested folders) or "flat" (file paths as flat links)
+SIDEBAR_STYLE="$sidebar_style"
+
+# HTTP port for the web server
+HTTP_PORT="$http_port"
 EOF
 
     echo "Configuration saved to .env:"
     echo "  CODE_DIR=$code_dir"
     echo "  OUTPUT_DIR=$output_dir"
-    echo "  EXTRA_PATH=$extra_path"
+    [[ -n "$exclude_projects" ]] && echo "  EXCLUDE_PROJECTS=$exclude_projects"
+    echo "  SIDEBAR_STYLE=$sidebar_style"
+    echo "  HTTP_PORT=$http_port"
 }
 
 cmd_up() {
-    local flag="${1:-}"
-    local flag2="${2:-}"
-    local serve=false
-    local build_mode=""
+    local clean_mode=false
 
-    # Parse flags (support --serve alone or combined with --build/--clean)
-    for arg in "$flag" "$flag2"; do
-        case "$arg" in
-            --serve) serve=true ;;
-            --clean) build_mode="clean" ;;
-            --build) build_mode="build" ;;
-        esac
+    for arg in "$@"; do
+        [[ "$arg" == "--clean" ]] && clean_mode=true
     done
 
     # Auto-setup if no .env
@@ -192,103 +172,70 @@ cmd_up() {
     fi
 
     load_env
+    check_deps || exit 1
 
-    if ! check_deps "$flag" "$flag2"; then
-        exit 1
-    fi
-
-    if session_exists; then
-        echo "Watcher is already running (tmux session: $SESSION_NAME)."
+    if container_running; then
+        echo "code-docs is already running."
         echo "Use './code-docs.sh status' to check state or './code-docs.sh down' to stop."
         return 0
     fi
 
-    # Pre-build if requested
-    if [[ "$build_mode" == "clean" ]]; then
-        echo "Running clean build..."
-        "$SCRIPT_DIR/build-docs.sh" --clean
-        echo ""
-    elif [[ "$build_mode" == "build" ]]; then
-        echo "Running full build..."
-        "$SCRIPT_DIR/build-docs.sh"
+    if [[ "$clean_mode" == true ]]; then
+        if [[ -z "${OUTPUT_DIR:-}" ]]; then
+            echo "Error: OUTPUT_DIR is not set. Run './code-docs.sh setup' first."
+            exit 1
+        fi
+        if [[ ! -d "$OUTPUT_DIR" ]]; then
+            echo "Output directory does not exist, nothing to clean."
+        else
+            echo "Cleaning $OUTPUT_DIR..."
+            find "$OUTPUT_DIR" -mindepth 1 -delete
+        fi
         echo ""
     fi
 
-    # Start watcher (with or without server)
-    if [[ "$serve" == true ]]; then
-        local port="${HTTP_PORT:-8000}"
+    echo "Starting code-docs..."
+    run_compose up -d --build
 
-        # Create tmux session with watcher
-        tmux new-session -d -s "$SESSION_NAME" "$SCRIPT_DIR/watch-docs.sh"
-
-        # Add http.server in a split pane
-        tmux split-window -t "$SESSION_NAME" -h "cd '$OUTPUT_DIR' && python3 -m http.server $port"
-
-        # Balance panes (50/50 split)
-        tmux select-layout -t "$SESSION_NAME" even-horizontal
-
-        echo "Watcher and server started (tmux session: $SESSION_NAME)."
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Open in browser:  http://localhost:$port/index.html"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        echo "Commands:"
-        echo "  View logs:     tmux attach -t $SESSION_NAME"
-        echo "  Stop both:     ./code-docs.sh down"
-        echo "  Check status:  ./code-docs.sh status"
-    else
-        # Original behavior: watcher only
-        tmux new-session -d -s "$SESSION_NAME" "$SCRIPT_DIR/watch-docs.sh"
-
-        echo "Watcher started (tmux session: $SESSION_NAME)."
-        echo ""
-        echo "  Check status:  ./code-docs.sh status"
-        echo "  View output:   tmux attach -t $SESSION_NAME"
-        echo "  Stop watcher:  ./code-docs.sh down"
-    fi
+    local port="${HTTP_PORT:-8000}"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "Open in browser:  http://localhost:$port/index.html"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Commands:"
+    echo "  View logs:   ./code-docs.sh logs"
+    echo "  Stop:        ./code-docs.sh down"
+    echo "  Status:      ./code-docs.sh status"
 }
 
 cmd_down() {
-    if session_exists; then
-        tmux kill-session -t "$SESSION_NAME"
-        echo "Watcher stopped."
-    else
-        echo "Watcher is not running."
-    fi
+    load_env || true
+    check_deps || exit 1
+    echo "Stopping code-docs..."
+    run_compose down
 }
 
 cmd_status() {
     echo "=== code-docs status ==="
     echo ""
 
-    # Watcher state
-    if session_exists; then
-        echo "Watcher: running (tmux session: $SESSION_NAME)"
+    check_deps || exit 1
 
-        # Check if HTTP server is running in the session
-        if load_env; then
-            local port="${HTTP_PORT:-8000}"
-            if pgrep -f "python.*http.server.*$port" > /dev/null 2>&1; then
-                echo "Server:  http://localhost:$port"
-            fi
-        fi
-    else
-        echo "Watcher: stopped"
-    fi
+    run_compose ps
 
-    # Configuration and timestamps
+    echo ""
+
     if load_env; then
-        echo ""
         echo "Configuration:"
-        echo "  CODE_DIR:   $CODE_DIR"
-        echo "  OUTPUT_DIR: $OUTPUT_DIR"
-        if [[ -n "${EXTRA_PATH:-}" ]]; then
-            echo "  EXTRA_PATH: $EXTRA_PATH"
-        fi
+        echo "  CODE_DIR:   ${CODE_DIR:-not set}"
+        echo "  OUTPUT_DIR: ${OUTPUT_DIR:-not set}"
+        echo "  HTTP_PORT:  ${HTTP_PORT:-8000}"
+        [[ -n "${EXCLUDE_PROJECTS:-}" ]] && echo "  EXCLUDE_PROJECTS: $EXCLUDE_PROJECTS"
+        echo "  SIDEBAR_STYLE: ${SIDEBAR_STYLE:-tree}"
 
         # Heartbeat
-        if [[ -f "$OUTPUT_DIR/_heartbeat.js" ]]; then
+        if [[ -f "${OUTPUT_DIR:-}/_heartbeat.js" ]]; then
             local hb_ts
             hb_ts=$(sed -n 's/.*= *\([0-9]*\).*/\1/p' "$OUTPUT_DIR/_heartbeat.js" 2>/dev/null)
             if [[ -n "$hb_ts" ]]; then
@@ -311,7 +258,7 @@ cmd_status() {
         fi
 
         # Last build
-        if [[ -f "$OUTPUT_DIR/_lastbuild.js" ]]; then
+        if [[ -f "${OUTPUT_DIR:-}/_lastbuild.js" ]]; then
             local build_ts
             build_ts=$(sed -n 's/.*= *\([0-9]*\).*/\1/p' "$OUTPUT_DIR/_lastbuild.js" 2>/dev/null)
             if [[ -n "$build_ts" ]]; then
@@ -332,9 +279,13 @@ cmd_status() {
             fi
         fi
     else
-        echo ""
         echo "No .env found. Run './code-docs.sh setup' to configure."
     fi
+}
+
+cmd_logs() {
+    check_deps || exit 1
+    run_compose logs -f
 }
 
 cmd_help() {
@@ -343,21 +294,20 @@ Usage: ./code-docs.sh <command> [options]
 
 Commands:
   setup          Interactive .env configuration wizard
-  up             Start the file watcher (auto-runs setup if no .env)
-  up --build     Run a full build, then start the watcher
-  up --clean     Clean build (remove all output), then start the watcher
-  up --serve     Start watcher + HTTP server on localhost:8000
-  down           Stop the file watcher (and server if running)
-  status         Show watcher state and configuration
+  up             Start the Docker container (auto-runs setup if no .env)
+  up --clean     Clean all output files, then start the Docker container
+  down           Stop the Docker container
+  status         Show container state and configuration
+  logs           Follow container logs (Ctrl+C to stop)
   help           Show this help message
 
 Examples:
-  ./code-docs.sh setup              # First-time setup
-  ./code-docs.sh up                 # Start watching for changes
-  ./code-docs.sh up --serve         # Start watcher + local web server
-  ./code-docs.sh up --serve --build # Build first, then serve
-  ./code-docs.sh status             # Check if watcher/server running
-  ./code-docs.sh down               # Stop everything
+  ./code-docs.sh setup          # First-time setup
+  ./code-docs.sh up             # Start (builds docs automatically on startup)
+  ./code-docs.sh up --clean     # Remove all output, then start fresh
+  ./code-docs.sh status         # Check if container is running
+  ./code-docs.sh logs           # View live log output
+  ./code-docs.sh down           # Stop everything
 USAGE
 }
 
@@ -368,13 +318,16 @@ case "${1:-}" in
         cmd_setup
         ;;
     up)
-        cmd_up "${2:-}" "${3:-}"
+        cmd_up "${@:2}"
         ;;
     down)
         cmd_down
         ;;
     status)
         cmd_status
+        ;;
+    logs)
+        cmd_logs
         ;;
     help|--help|-h)
         cmd_help

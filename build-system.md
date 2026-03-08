@@ -23,7 +23,7 @@ A shell-based build system that converts Markdown files from source code project
 
 1. Clone the repo
 2. Run `./code-docs.sh setup` (interactive wizard that creates `.env`)
-3. Install dependencies: `brew install pandoc fswatch tmux` (or equivalent)
+3. Install Docker Desktop (pandoc and other dependencies are bundled in the container)
 4. Optionally create a symlink for convenience: `ln -s /path/to/code-docs ~/bin/code-docs`
 
 ## Usage
@@ -34,13 +34,11 @@ A shell-based build system that converts Markdown files from source code project
 
 ```bash
 ./code-docs.sh setup              # Interactive .env configuration wizard
-./code-docs.sh up                 # Start the file watcher (auto-runs setup if no .env)
-./code-docs.sh up --build         # Full build, then start watcher
-./code-docs.sh up --clean         # Clean build, then start watcher
-./code-docs.sh up --serve         # Start watcher + HTTP server on localhost:8000
-./code-docs.sh up --serve --build # Build then serve over HTTP
-./code-docs.sh down               # Stop the file watcher (and server if running)
-./code-docs.sh status             # Show watcher state and configuration
+./code-docs.sh up                 # Start the Docker container (auto-runs setup if no .env)
+./code-docs.sh up --clean         # Clean output files, then start the Docker container
+./code-docs.sh down               # Stop the Docker container
+./code-docs.sh status             # Show container state and configuration
+./code-docs.sh logs               # Follow container logs (Ctrl+C to stop)
 ./code-docs.sh help               # Show usage info
 ```
 
@@ -56,36 +54,23 @@ The build script can also be invoked directly:
 
 ### Running the File Watcher
 
-The watcher runs in a **tmux session** so it persists across terminal sessions. Use `code-docs.sh` to manage it:
+The watcher runs in a **Docker container** alongside a built-in HTTP server. Use `code-docs.sh` to manage it:
 
 ```bash
-./code-docs.sh up       # Start the watcher
-./code-docs.sh down     # Stop the watcher
+./code-docs.sh up       # Start the container (builds docs + starts watcher + HTTP server)
+./code-docs.sh down     # Stop the container
 ./code-docs.sh status   # Check if it's running
-
-# Attach to the tmux session to see live output (detach with Ctrl-b d)
-tmux attach -t code-docs
+./code-docs.sh logs     # Follow live log output (Ctrl+C to detach)
 ```
 
-> **Note:** A LaunchAgent (`com.user.code-docs-watcher.plist`) was previously used but abandoned because macOS Full Disk Access restrictions prevent launchd-spawned processes from accessing `~/Documents/`. Running the watcher from a terminal (via tmux) inherits the terminal's FDA permissions and works reliably.
+The container includes everything needed (pandoc, Python HTTP server, file watcher). Source files are bind-mounted read-only; HTML output is written to a separate bind-mounted volume.
 
-### Local Web Server
-
-For a better browsing experience with direct URLs and browser refresh support:
-
-```bash
-./code-docs.sh up --serve         # Start watcher + server
-```
-
-This starts a Python HTTP server at `http://localhost:8000` alongside the file watcher. You get:
+Open `http://localhost:8000` (or the port configured via `HTTP_PORT` in `.env`) to browse your docs. You get:
 - Direct doc URLs like `http://localhost:8000/project/README.html`
 - Browser refresh works (no iframe context loss)
 - Bookmarkable and shareable links
-- Standard browser navigation (back/forward buttons)
 
-The watcher and server both run in the same tmux session. Use `./code-docs.sh down` to stop both.
-
-> **Note:** Without `--serve`, docs open as `file:///` URLs with iframe-based navigation in index.html. With `--serve`, each doc is accessible at its own HTTP URL.
+> **Note:** The watcher uses polling (every 15s by default, configurable via `POLL_INTERVAL`) instead of inotify because Docker Desktop for macOS does not reliably propagate inotify events through bind-mounted volumes.
 
 ## How It Works
 
@@ -162,14 +147,17 @@ A `dashboard.html` is generated with metadata about all documented projects:
 
 ### File Watcher
 
-`watch-docs.sh` uses `fswatch` to monitor `$CODE_DIR` for changes. It classifies events into three categories:
+`watch-docs.sh` polls `$CODE_DIR` every `POLL_INTERVAL` seconds (default: 15) and calls `build-docs.sh --update`. The `--update` mode diffs the current set of `.md` files and their mtimes against a saved state file (`_state.tsv`) and rebuilds only what changed:
 
-- **Markdown files** (`.md`) — incremental rebuild of the changed file
-- **Directories or deleted paths** — full rebuild with orphan cleanup (debounced to max once per 10 seconds)
-- **Other files** — ignored silently
+- **New files** — built and added to the index
+- **Modified files** — rebuilt (mtime changed since last poll)
+- **Deleted files** — corresponding HTML removed
+
+Polling was chosen over event-based watchers (inotifywait, fswatch) because Docker Desktop for macOS does not reliably deliver inotify events through bind-mounted host volumes.
 
 ## Dependencies
 
+All dependencies are bundled in the Docker image. For native/manual use:
+
 - **pandoc** — Markdown to HTML conversion
-- **fswatch** — File system change monitoring (for `watch-docs.sh`)
-- Both available via Homebrew (`brew install pandoc fswatch`); path configured via `EXTRA_PATH` in `.env`
+- **fswatch** — File system change monitoring (macOS; `brew install pandoc fswatch`)

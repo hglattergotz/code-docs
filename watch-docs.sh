@@ -34,8 +34,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Running initial full build..."
-"$SCRIPT_DIR/build-docs.sh"
+if [[ "${SKIP_INITIAL_BUILD:-}" != "1" ]]; then
+    echo "Running initial full build..."
+    "$SCRIPT_DIR/build-docs.sh"
+fi
 
 echo ""
 echo "Polling for changes every ${POLL_INTERVAL}s in $CODE_DIR ..."

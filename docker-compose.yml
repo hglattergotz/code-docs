@@ -1,11 +1,12 @@
 services:
   code-docs:
+    container_name: code-docs
     build: .
     volumes:
       - ${HOST_CODE_DIR}:/code:ro
       - ${HOST_OUTPUT_DIR}:/output
     ports:
-      - "8000:8000"
+      - "${HTTP_PORT:-8000}:8000"
     environment:
       - CODE_DIR=/code
       - OUTPUT_DIR=/output

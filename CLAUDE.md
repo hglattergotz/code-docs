@@ -86,5 +86,5 @@ Dark/light mode toggle in the sidebar header. Uses CSS custom properties on `:ro
 - Scripts use `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"` for all relative paths (resolves symlinks)
 - A symlink to this repo (e.g. `~/bin/code-docs`) can be created for convenience
 - HTML output goes to `$OUTPUT_DIR` (configured in `.env`)
-- The watcher runs in a **tmux session** (LaunchAgent was abandoned — macOS Full Disk Access restrictions prevent launchd processes from accessing `~/Documents/`)
+- The watcher runs in a **Docker container** (LaunchAgent and tmux were abandoned — Docker avoids macOS Full Disk Access restrictions entirely)
 - This project lives inside the directory it scans (`$CODE_DIR`), so its own `.md` files intentionally appear in the generated docs

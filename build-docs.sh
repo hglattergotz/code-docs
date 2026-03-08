@@ -151,13 +151,16 @@ find_md_files() {
 
 build_file() {
     local md_file="$1"
+    local force="${2:-}"
     local rel_path="${md_file#"$CODE_DIR"/}"
     local html_path="$OUTPUT_DIR/${rel_path%.md}.html"
     local html_dir
     html_dir="$(dirname "$html_path")"
 
-    # Skip if HTML is newer than both the MD file and the style
-    if [[ -f "$html_path" && "$html_path" -nt "$md_file" && "$html_path" -nt "$STYLE_FILE" ]]; then
+    # Skip if HTML is newer than both the MD file and the style.
+    # Never skip when force=1 (incremental watcher-triggered build) because
+    # bind-mount mtime can be stale in Docker Desktop even after a real change.
+    if [[ "$force" != "1" && -f "$html_path" && "$html_path" -nt "$md_file" && "$html_path" -nt "$STYLE_FILE" ]]; then
         return 0
     fi
 
@@ -1290,8 +1293,7 @@ USAGE
 
 elif [[ "${1:-}" == "--clean" ]]; then
     echo "Cleaning $OUTPUT_DIR..."
-    rm -rf "$OUTPUT_DIR"
-    mkdir -p "$OUTPUT_DIR"
+    find "$OUTPUT_DIR" -mindepth 1 -delete
     echo "Running full build..."
     find_md_files | while IFS= read -r f; do
         build_file "$f"
@@ -1318,7 +1320,7 @@ elif [[ "${1:-}" == "--file" && -n "${2:-}" ]]; then
                 [[ "$project" == "$excluded" ]] && exit 0
             done
         fi
-        build_file "$md_file"
+        build_file "$md_file" 1
         cleanup_orphans
         cleanup_excluded_projects
         build_system_docs
