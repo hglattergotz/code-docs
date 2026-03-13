@@ -41,7 +41,9 @@
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--bg-body); }
   body {
+    min-height: 100vh;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     background: var(--bg-body) !important;
     color: var(--text-body) !important;
@@ -51,8 +53,7 @@
   }
   body > header, body > main, body > div, .container { max-width: 100% !important; margin: 0 auto; }
   /* Pandoc wraps content in these elements with --standalone */
-  body > header { margin-bottom: 0; }
-  body > header #title-block-header { margin-bottom: 0; }
+  body > header { display: none; }
 
   h1, h2, h3, h4, h5, h6 { color: var(--text-primary); font-weight: 700; }
   h1 { font-size: 32px; margin-top: 0; margin-bottom: 8px; }
